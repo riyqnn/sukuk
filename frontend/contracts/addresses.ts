@@ -1,8 +1,8 @@
 export const SEPOLIA_CHAIN_ID = 11155111;
 
 export const CONTRACTS = {
-  idrx: "0xF5411a3071489943917788bfd7F6E165C62a8bF1" as const,
-  sukukVault: "0xd4A71c587714e2742632028172c7b721b503e14E" as const,
+  idrx: "0xF15E653e19bd35cDBE9c32999a912D040b76324b" as const,
+  sukukVault: "0xD963B9bF6747771bc44043445A2a0edba62ccE76" as const,
 } as const;
 
 export const ADDRESSES = {
