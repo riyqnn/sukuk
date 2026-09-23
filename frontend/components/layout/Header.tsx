@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAccount, useDisconnect } from "wagmi";
 import { compactAddress } from "@/lib/formatters";
-import { ADDRESSES } from "@/contracts/addresses";
+import { ADDRESSES, isAdminAddress } from "@/contracts/addresses";
 import { useState, useRef, useEffect } from "react";
 import { ChevronDown, Copy, ExternalLink, Shield, Menu, X } from "lucide-react";
 import { WalletConnect } from "@/components/wallet/WalletConnect";
@@ -26,7 +26,7 @@ export function Header() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  const isAdmin = isConnected && address?.toLowerCase() === ADDRESSES.protocolAdmin.toLowerCase();
+  const isAdmin = isConnected && isAdminAddress(address);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {

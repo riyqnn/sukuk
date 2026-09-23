@@ -142,17 +142,22 @@ export default function ProtocolPage() {
                   <h2 className="text-lg font-bold text-foreground tracking-tight">Protocol Admin Governance</h2>
                 </div>
                 <div className="space-y-3 text-xs font-mono">
-                  <div className="flex justify-between items-center pb-2 border-b border-border">
-                    <span className="text-muted-foreground font-sans">Admin Address</span>
-                    <a
-                      href={`https://sepolia.etherscan.io/address/${ADDRESSES.protocolAdmin}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-bold text-ring hover:underline flex items-center gap-1"
-                    >
-                      {compactAddress(ADDRESSES.protocolAdmin)}
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                  <div className="flex justify-between items-start pb-2 border-b border-border">
+                    <span className="text-muted-foreground font-sans">Admin Addresses</span>
+                    <div className="flex flex-col items-end gap-1">
+                      {ADDRESSES.protocolAdmins.map((adminAddr) => (
+                        <a
+                          key={adminAddr}
+                          href={`https://sepolia.etherscan.io/address/${adminAddr}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-bold text-ring hover:underline flex items-center gap-1"
+                        >
+                          {compactAddress(adminAddr)}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ))}
+                    </div>
                   </div>
                   <div className="flex justify-between items-center pb-2 border-b border-border">
                     <span className="text-muted-foreground font-sans">Role Identifier</span>

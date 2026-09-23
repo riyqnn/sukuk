@@ -1,7 +1,7 @@
 "use client";
 
 import { useAccount } from "wagmi";
-import { CONTRACTS, ADDRESSES } from "@/contracts/addresses";
+import { CONTRACTS, ADDRESSES, isAdminAddress } from "@/contracts/addresses";
 import {
   useVaultState, useVaultParameters, useVaultTotals, useIDRXBalance,
   useCreateVault, useProtocolFill, useSendPayout, useCloseVault,
@@ -65,7 +65,7 @@ export default function AdminPage() {
   const { data: paused, refetch: refetchPaused } = useVaultPaused();
 
   const s = Number(vaultStateRaw ?? 0);
-  const isAdmin = address?.toLowerCase() === ADDRESSES.protocolAdmin.toLowerCase();
+  const isAdmin = isAdminAddress(address);
 
   // Step 1 — Create Vault
   const [maxQuotaInput, setMaxQuotaInput] = useState("");

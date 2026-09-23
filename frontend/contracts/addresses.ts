@@ -7,5 +7,16 @@ export const CONTRACTS = {
 
 export const ADDRESSES = {
   protocolAdmin: "0x1cEdC27fc1351141c0231BFeD3E7caFA9bbb2238" as const,
+  protocolAdmins: [
+    "0x1cEdC27fc1351141c0231BFeD3E7caFA9bbb2238",
+    "0xa189Be51cb780f0C26e3e161d73F69484d37de85",
+  ] as const,
   auditorMultisig: "0x411E4A576d3cA579e8795559875D1F0684452801" as const,
 } as const;
+
+export const isAdminAddress = (address?: string): boolean => {
+  if (!address) return false;
+  return ADDRESSES.protocolAdmins.some(
+    (admin) => admin.toLowerCase() === address.toLowerCase()
+  );
+};
