@@ -1,0 +1,10 @@
+{
+  "name": "sukuk-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter frontend run dev",
+    "lint": "pnpm --filter frontend run lint",
+    "test": "pnpm --filter rwa-sukuk-contracts run test",
+    "clean": "find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null; echo '✅ node_modules deleted'"
+  }
+}

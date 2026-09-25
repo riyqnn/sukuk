@@ -11,7 +11,7 @@ node_modules/
 *.env
 
 # Next.js & Build outputs
-.next/
+**/.next/
 **/out/
 **/build/
 **/dist/
@@ -35,10 +35,12 @@ yarn-error.log*
 
 # System & IDE
 .DS_Store
+**/.DS_Store
 Thumbs.db
 .vscode/
 .idea/
 .vercel
+**/.vercel
 
 # Local tooling (code index, per-user agent settings)
 .codegraph/
@@ -46,5 +48,12 @@ Thumbs.db
 
 # Test coverage & keys
 coverage/
+**/coverage/
 coverage.json
 *.pem
+
+# Unwanted lockfiles (optional, because we use pnpm at root)
+frontend/package-lock.json
+frontend/yarn.lock
+rwa-sukuk-contracts/package-lock.json
+rwa-sukuk-contracts/yarn.lock
