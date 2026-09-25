@@ -9,6 +9,10 @@ describe("SukukVault — access control", function () {
   async function setup() {
     const f = await loadFixture(deployFixture);
     await f.vault.createVault(ethers.parseEther("1000"), DURATION, 500);
+    // Non-empty vault so approveVault() (which rejects an empty vault) can be used.
+    await f.idrx.mint(f.investor1.address, ethers.parseEther("1"));
+    await f.idrx.connect(f.investor1).approve(await f.vault.getAddress(), ethers.parseEther("1"));
+    await f.vault.connect(f.investor1).deposit(ethers.parseEther("1"), f.investor1.address);
     return f;
   }
 
@@ -87,7 +91,7 @@ describe("SukukVault — access control", function () {
     // A role-less account can deposit...
     await expect(vault.connect(investor1).deposit(ethers.parseEther("100"), investor1.address))
       .to.emit(vault, "Deposited");
-    // ...and owns shares.
-    expect(await vault.balanceOf(investor1.address)).to.equal(ethers.parseEther("100"));
+    // ...and owns shares (100 here + 1 from setup()).
+    expect(await vault.balanceOf(investor1.address)).to.equal(ethers.parseEther("101"));
   });
 });

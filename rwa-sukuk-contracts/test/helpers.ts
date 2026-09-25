@@ -27,7 +27,7 @@ export function near(actual: bigint, expected: bigint, tolerance = 3n): void {
 export async function deployFixture() {
   const [admin, auditor, investor1, investor2, attacker] = await ethers.getSigners();
 
-  const IDRX = await ethers.getContractFactory("IDRX");
+  const IDRX = await ethers.getContractFactory("MockIDRX");
   const idrx = await IDRX.deploy(admin.address);
   await idrx.waitForDeployment();
 

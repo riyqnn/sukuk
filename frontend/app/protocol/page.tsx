@@ -1,269 +1,215 @@
 "use client";
 
 import Link from "next/link";
-import { CONTRACTS, ADDRESSES } from "@/contracts/addresses";
+import { motion } from "framer-motion";
+import { ArrowRight, ExternalLink } from "lucide-react";
+import { ADDRESSES, CONTRACTS } from "@/contracts/addresses";
+import { useSafePolicy } from "@/lib/contracts";
 import { compactAddress } from "@/lib/formatters";
-import { ShieldCheck, ExternalLink, ArrowRight, Cpu, Database, Network } from "lucide-react";
-import {
-  TiltCard,
-  MagneticButton,
-  PageTransition,
-  StaggerContainer,
-  StaggerItem,
-  FadeIn,
-} from "@/components/ui/motion";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Panel } from "@/components/ui/Panel";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { EASE, PageTransition, Press, Reveal, Stagger, StaggerItem } from "@/components/ui/motion";
+
+const LANES = ["Protocol", "Investors", "Auditor Safe"] as const;
+
+const CALLS: { n: number; lane: (typeof LANES)[number]; call: string; effect: string; to?: string }[] = [
+  { n: 1, lane: "Protocol", call: "createVault()", effect: "Sets quota, lock period and target yield", to: "Open" },
+  { n: 2, lane: "Investors", call: "deposit()", effect: "IDRX in, sSUKUK shares minted" },
+  { n: 3, lane: "Protocol", call: "protocolFill()", effect: "Optional top-up of the remaining quota" },
+  { n: 4, lane: "Auditor Safe", call: "approveVault()", effect: "Closes subscription, starts the lock", to: "Locked" },
+  { n: 5, lane: "Protocol", call: "sendPayout()", effect: "Pays the return in after the lock ends", to: "Matured" },
+  { n: 6, lane: "Auditor Safe", call: "approvePayout()", effect: "Opens redemption", to: "Approved" },
+  { n: 7, lane: "Investors", call: "redeem()", effect: "Shares burned, IDRX paid out" },
+];
 
 export default function ProtocolPage() {
+  const safe = useSafePolicy();
+
   return (
     <PageTransition>
-      <div className="container py-12 space-y-12">
-        <FadeIn direction="down" className="space-y-3">
-          <div className="eyebrow">
-            <span className="eyebrow-line" />
-            <span>01 &middot; SYSTEM SPECIFICATIONS & GOVERNANCE</span>
-          </div>
-
-          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight text-foreground">
-            Protocol Architecture & Controls
-          </h1>
-
-          <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
-            Comprehensive breakdown of smart contract roles, Safe multi-signature oracle verification, and the complete 7-step ERC-4626 Sukuk lifecycle.
-          </p>
-        </FadeIn>
-
-        {/* State Machine Diagram Section */}
-        <FadeIn direction="up" delay={0.1} className="bg-card border border-border rounded-2xl p-6 sm:p-8 space-y-6 shadow-md">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
-            <div className="space-y-1">
-              <span className="text-[0.6875rem] font-bold text-ring uppercase tracking-wider bg-ring/10 border border-ring/30 px-3 py-1 rounded-full">
-                ERC-4626 STATE MACHINE
-              </span>
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
-                7-Step Protocol Lifecycle Workflow
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                Deterministic state transitions enforced by Ethereum Sepolia smart contracts & Safe Multisig Oracle.
-              </p>
-            </div>
-
-            <MagneticButton>
-              <Link href="/auditor" className="button text-xs py-2.5">
-                <ShieldCheck className="w-4 h-4" />
-                <span>Auditor Portal</span>
-                <span className="button-arrow">
-                  <ArrowRight className="w-3.5 h-3.5" />
+      <div className="container pb-24">
+        <PageHeader
+          kicker="Protocol"
+          title="How SukukVault is wired"
+          description="Seven calls take a round from creation to redemption. Each one is gated to a single role, enforced by the contract."
+          actions={
+            <Press>
+              <Link href="/auditor" className="btn btn-ghost">
+                Auditor portal
+                <span className="btn-icon">
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
               </Link>
-            </MagneticButton>
+            </Press>
+          }
+        />
+
+        {/* Swimlane: one row per role, one column per call, read left to right. */}
+        <Panel title="The seven calls, by role" description="Calls that change the vault state are marked with the state they lead to." bodyClassName="p-0">
+          <div className="hidden lg:block">
+            <div className="grid grid-cols-[150px_repeat(7,1fr)] border-b border-line bg-mist text-xs text-muted-foreground">
+              <div className="px-5 py-3">Role</div>
+              {CALLS.map((c) => (
+                <div key={c.n} className="figure border-l border-line px-3 py-3 text-center">
+                  {String(c.n).padStart(2, "0")}
+                </div>
+              ))}
+            </div>
+            {LANES.map((lane, li) => (
+              <div key={lane} className={`grid grid-cols-[150px_repeat(7,1fr)] ${li > 0 ? "border-t border-line" : ""}`}>
+                <div className="flex items-center px-5 py-6 text-[13px] font-semibold">{lane}</div>
+                {CALLS.map((c) => (
+                  <div key={c.n} className="relative border-l border-line px-2 py-4">
+                    {c.lane === lane && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 12 }}
+                        whileInView={{ opacity: 1, y: 0 }}
+                        viewport={{ once: true }}
+                        transition={{ duration: 0.6, delay: c.n * 0.07, ease: EASE }}
+                        className="h-full rounded-xl bg-mint px-3 py-3"
+                      >
+                        <code className="block font-mono text-[12px] font-medium text-forest-deep">{c.call}</code>
+                        <p className="mt-1.5 text-[12px] leading-snug text-forest-deep/80">{c.effect}</p>
+                        {c.to && <span className="chip mt-2 h-6 bg-white px-2 text-[11px] text-forest-deep">to {c.to}</span>}
+                      </motion.div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
 
-          {/* Roles Swimlane Grid */}
-          <StaggerContainer className="grid grid-cols-1 lg:grid-cols-3 gap-6" staggerDelay={0.1}>
-            {/* Admin Role */}
-            <StaggerItem className="h-full">
-              <TiltCard maxTilt={4} className="h-full">
-                <div className="bg-secondary/40 border border-border rounded-xl p-6 space-y-4 h-full">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
-                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">1. Protocol Admin</h3>
+          <ol className="hairline lg:hidden">
+            {CALLS.map((c) => (
+              <li key={c.n} className="flex gap-4 px-6 py-5">
+                <span className="figure mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-mint text-xs text-forest-deep">
+                  {c.n}
+                </span>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="font-mono text-[13px] font-medium">{c.call}</code>
+                    {c.to && <span className="chip h-6 bg-mint text-[11px] text-forest-deep">to {c.to}</span>}
                   </div>
-                  <div className="space-y-3 font-mono text-xs">
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 1: <code>createVault()</code></span>
-                      <p className="text-muted-foreground font-sans">Configures quota, 180-day lock duration, and target APY. Moves state to <strong>OPEN</strong>.</p>
-                    </div>
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 3: <code>protocolFill()</code></span>
-                      <p className="text-muted-foreground font-sans">Tops up remaining subscription quota from treasury if required.</p>
-                    </div>
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 5: <code>sendPayout()</code></span>
-                      <p className="text-muted-foreground font-sans">Deposits IDRX principal + yield. Moves state to <strong>MATURED</strong>.</p>
-                    </div>
-                  </div>
+                  <p className="mt-1 text-[13px] text-muted-foreground">
+                    {c.lane} · {c.effect}
+                  </p>
                 </div>
-              </TiltCard>
-            </StaggerItem>
+              </li>
+            ))}
+          </ol>
+        </Panel>
 
-            {/* Investor Role */}
-            <StaggerItem className="h-full">
-              <TiltCard maxTilt={4} className="h-full">
-                <div className="bg-secondary/40 border border-border rounded-xl p-6 space-y-4 h-full">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-3 h-3 rounded-full bg-blue-500 animate-pulse" />
-                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">2. Investor / Subscriber</h3>
-                  </div>
-                  <div className="space-y-3 font-mono text-xs">
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 2: <code>deposit(IDRX)</code></span>
-                      <p className="text-muted-foreground font-sans">Stakes IDRX and receives minted <code>sSUKUK</code> vault shares at parity rate.</p>
-                    </div>
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 7: <code>redeem(sSUKUK)</code></span>
-                      <p className="text-muted-foreground font-sans">Burns shares for IDRX principal + yield after auditor payout authorization.</p>
-                    </div>
-                  </div>
-                </div>
-              </TiltCard>
-            </StaggerItem>
+        <Stagger className="mt-8 grid gap-8 lg:grid-cols-2" gap={0.1}>
+          <StaggerItem>
+            <div className="panel h-full p-7">
+              <p className="label">PROTOCOL_ROLE</p>
+              <h2 className="title mt-2 text-2xl">Protocol admin</h2>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                Creates the round, tops up the quota, funds the payout, closes the round, and can pause
+                deposits and redemptions. It cannot lock funds or release the payout.
+              </p>
+              <dl className="mt-6 space-y-3 text-[13px]">
+                <Row label={ADDRESSES.protocolAdmins.length > 1 ? "Holders" : "Holder"}>
+                  <span className="flex flex-col items-end gap-1">
+                    {ADDRESSES.protocolAdmins.map((a) => (
+                      <AddressLink key={a} href={`https://sepolia.etherscan.io/address/${a}`} value={a} />
+                    ))}
+                  </span>
+                </Row>
+                <Row label="Can call">
+                  <span className="font-mono">createVault · protocolFill · sendPayout · closeVault · pause</span>
+                </Row>
+              </dl>
+            </div>
+          </StaggerItem>
 
-            {/* Auditor Multi-Sig Role */}
-            <StaggerItem className="h-full">
-              <TiltCard maxTilt={4} className="h-full">
-                <div className="bg-secondary/40 border border-border rounded-xl p-6 space-y-4 h-full">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-3 h-3 rounded-full bg-ring animate-pulse" />
-                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">3. Safe Auditor Oracle</h3>
-                  </div>
-                  <div className="space-y-3 font-mono text-xs">
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 4: <code>approveVault()</code></span>
-                      <p className="text-muted-foreground font-sans">Audits RWA asset backing & locks funds. Moves state to <strong>LOCKED</strong>.</p>
-                    </div>
-                    <div className="p-3 bg-card rounded-lg border border-border space-y-1">
-                      <span className="font-bold text-foreground">Step 6: <code>approvePayout()</code></span>
-                      <p className="text-muted-foreground font-sans">Audits yield calculation. Moves state to <strong>APPROVED_FOR_PAYOUT</strong>.</p>
-                    </div>
-                  </div>
-                </div>
-              </TiltCard>
-            </StaggerItem>
-          </StaggerContainer>
-        </FadeIn>
-
-        {/* Governance & Safe Oracle Matrix */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <FadeIn direction="right" delay={0.15}>
-            <TiltCard maxTilt={4}>
-              <div className="bg-card border border-border rounded-2xl p-6 space-y-5 shadow-xs">
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-5 h-5 text-ring" />
-                  <h2 className="text-lg font-bold text-foreground tracking-tight">Protocol Admin Governance</h2>
-                </div>
-                <div className="space-y-3 text-xs font-mono">
-                  <div className="flex justify-between items-start pb-2 border-b border-border">
-                    <span className="text-muted-foreground font-sans">Admin Addresses</span>
-                    <div className="flex flex-col items-end gap-1">
-                      {ADDRESSES.protocolAdmins.map((adminAddr) => (
-                        <a
-                          key={adminAddr}
-                          href={`https://sepolia.etherscan.io/address/${adminAddr}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-bold text-ring hover:underline flex items-center gap-1"
-                        >
-                          {compactAddress(adminAddr)}
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center pb-2 border-b border-border">
-                    <span className="text-muted-foreground font-sans">Role Identifier</span>
-                    <span className="font-bold text-foreground">PROTOCOL_ROLE</span>
-                  </div>
-                  <div className="flex justify-between items-start gap-4">
-                    <span className="text-muted-foreground font-sans shrink-0">Capabilities</span>
-                    <span className="font-sans text-foreground text-right">
-                      Vault parameter initialization, quota top-ups, yield funding, emergency circuit breaker.
+          <StaggerItem>
+            <div className="panel-mist h-full p-7">
+              <p className="label">AUDITOR_ROLE</p>
+              <h2 className="title mt-2 text-2xl">Auditor Safe</h2>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                The only key that can lock a round and release its payout. The role administers itself,
+                so the protocol admin cannot grant it.
+              </p>
+              <dl className="mt-6 space-y-3 text-[13px]">
+                <Row label="Safe">
+                  <AddressLink href={`https://app.safe.global/home?safe=sep:${ADDRESSES.auditorMultisig}`} value={ADDRESSES.auditorMultisig} />
+                </Row>
+                <Row label="Signing policy">
+                  {safe.isLoading ? (
+                    <Skeleton className="h-5 w-24" />
+                  ) : safe.threshold !== undefined && safe.owners ? (
+                    <span className="chip bg-pistachio text-forest-deep">
+                      {safe.threshold.toString()} of {safe.owners.length} owners
                     </span>
-                  </div>
-                </div>
-              </div>
-            </TiltCard>
-          </FadeIn>
+                  ) : (
+                    <span className="text-muted-foreground">Could not read the Safe</span>
+                  )}
+                </Row>
+                {safe.owners && (
+                  <Row label="Owners">
+                    <span className="flex flex-col items-end gap-1">
+                      {safe.owners.map((o) => (
+                        <AddressLink key={o} href={`https://sepolia.etherscan.io/address/${o}`} value={o} />
+                      ))}
+                    </span>
+                  </Row>
+                )}
+              </dl>
+            </div>
+          </StaggerItem>
+        </Stagger>
 
-          <FadeIn direction="left" delay={0.15}>
-            <TiltCard maxTilt={4}>
-              <div className="bg-card border border-border rounded-2xl p-6 space-y-5 shadow-xs">
-                <div className="flex items-center gap-2">
-                  <Network className="w-5 h-5 text-ring" />
-                  <h2 className="text-lg font-bold text-foreground tracking-tight">Auditor Multi-Sig Oracle</h2>
+        <Panel title="Deployed contracts" description="Ethereum Sepolia, chain ID 11155111." className="mt-8" bodyClassName="p-0" delay={0.05}>
+          <ul className="hairline">
+            {[
+              { name: "SukukVault", spec: "ERC-4626 vault. Issues sSUKUK shares.", address: CONTRACTS.sukukVault },
+              { name: "MockIDRX", spec: "ERC-20, 18 decimals. Testnet only, not the official IDRX.", address: CONTRACTS.idrx },
+            ].map((c) => (
+              <li key={c.address} className="flex flex-col gap-2 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[15px] font-semibold">{c.name}</p>
+                  <p className="mt-0.5 text-[13px] text-muted-foreground">{c.spec}</p>
                 </div>
-                <div className="space-y-3 text-xs font-mono">
-                  <div className="flex justify-between items-center pb-2 border-b border-border">
-                    <span className="text-muted-foreground font-sans">Safe Multisig Account</span>
-                    <a
-                      href={`https://app.safe.global/home?safe=sep:${ADDRESSES.auditorMultisig}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-bold text-ring hover:underline flex items-center gap-1"
-                    >
-                      {compactAddress(ADDRESSES.auditorMultisig)}
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                  <div className="flex justify-between items-center pb-2 border-b border-border">
-                    <span className="text-muted-foreground font-sans">Threshold</span>
-                    <span className="font-bold text-foreground">2 of 3 Multi-Sig Signatures</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground font-sans">Verification Portal</span>
-                    <Link href="/auditor" className="text-ring font-bold font-sans hover:underline flex items-center gap-1">
-                      Safe SDK Portal <ArrowRight className="w-3 h-3" />
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            </TiltCard>
-          </FadeIn>
-        </div>
+                <a
+                  href={`https://sepolia.etherscan.io/address/${c.address}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 break-all font-mono text-xs text-muted-foreground hover:text-forest"
+                >
+                  {c.address} <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Panel>
 
-        {/* Smart Contract Matrix */}
-        <FadeIn direction="up" delay={0.2} className="bg-card border border-border rounded-2xl overflow-hidden shadow-xs">
-          <div className="px-6 py-4 border-b border-border flex items-center justify-between">
-            <h2 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
-              <Database className="w-4 h-4 text-ring" /> Deployed Contract Matrix
-            </h2>
-            <span className="text-[0.6875rem] font-mono text-muted-foreground">ETHEREUM SEPOLIA (CHAIN ID: 11155111)</span>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-secondary/40 border-b border-border text-[0.6875rem] font-bold text-muted-foreground uppercase tracking-wider">
-                  <th className="px-6 py-3">Contract Name</th>
-                  <th className="px-6 py-3">On-Chain Address</th>
-                  <th className="px-6 py-3">Specification</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60 text-xs">
-                <tr className="hover:bg-secondary/30 transition-colors">
-                  <td className="px-6 py-4 font-bold text-foreground">IDRX Stablecoin</td>
-                  <td className="px-6 py-4">
-                    <a
-                      href={`https://sepolia.etherscan.io/address/${CONTRACTS.idrx}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono font-bold text-ring hover:underline flex items-center gap-1"
-                    >
-                      {compactAddress(CONTRACTS.idrx)}
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </td>
-                  <td className="px-6 py-4 text-muted-foreground font-mono">ERC-20 Underlying Asset Token</td>
-                </tr>
-                <tr className="hover:bg-secondary/30 transition-colors">
-                  <td className="px-6 py-4 font-bold text-foreground">SukukVault</td>
-                  <td className="px-6 py-4">
-                    <a
-                      href={`https://sepolia.etherscan.io/address/${CONTRACTS.sukukVault}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono font-bold text-ring hover:underline flex items-center gap-1"
-                    >
-                      {compactAddress(CONTRACTS.sukukVault)}
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </td>
-                  <td className="px-6 py-4 text-muted-foreground font-mono">ERC-4626 Yield-Bearing Vault</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </FadeIn>
+        <Reveal className="mt-8 rounded-[24px] bg-amber-soft px-7 py-6 text-[13px] leading-relaxed text-amber">
+          <p className="font-semibold">What the contract does not check</p>
+          <p className="mt-1 max-w-[80ch]">
+            SukukVault does not verify that a real-world asset backs the round, or that the payout matches the
+            target yield. Those checks are made off-chain by the Safe owners before they sign.
+          </p>
+        </Reveal>
       </div>
     </PageTransition>
+  );
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6 border-t border-line pt-3">
+      <dt className="shrink-0 text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-right">{children}</dd>
+    </div>
+  );
+}
+
+function AddressLink({ href, value }: { href: string; value: string }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-mono font-medium text-forest hover:underline">
+      {compactAddress(value)} <ExternalLink className="h-3 w-3" aria-hidden="true" />
+    </a>
   );
 }

@@ -29,7 +29,7 @@ async function main() {
     )
   );
 
-  const idrx = await ethers.getContractAt("IDRX", deployment.idrx);
+  const idrx = await ethers.getContractAt("MockIDRX", deployment.idrx);
 
   const seedInvestors = (process.env.SEED_INVESTORS ?? "")
     .split(",")

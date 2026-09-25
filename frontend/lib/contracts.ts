@@ -1,10 +1,38 @@
 "use client";
 
-import { useReadContract, useWriteContract } from "wagmi";
-import { CONTRACTS } from "@/contracts/addresses";
-import { IDRX_ABI, SUKUK_VAULT_ABI } from "@/contracts/abis";
+import { useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { ADDRESSES, CONTRACTS } from "@/contracts/addresses";
+import { IDRX_ABI, SAFE_ABI, SUKUK_VAULT_ABI } from "@/contracts/abis";
 import { sepolia } from "wagmi/chains";
 import { useState } from "react";
+
+/* -------------------------------------------------------------------------- */
+/*  Mined writes                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Like wagmi's `writeContractAsync`, but resolves only once the transaction is
+ * mined, and rejects if it reverted. Needed so `approve` -> `deposit` sequences
+ * do not race the allowance, and so the UI never reports "confirmed" early.
+ */
+function useMinedWrite() {
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: sepolia.id });
+  const queryClient = useQueryClient();
+  const write = useCallback(
+    async (...args: Parameters<typeof writeContractAsync>): Promise<`0x${string}`> => {
+      const hash = await writeContractAsync(...args);
+      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
+      if (receipt?.status === "reverted") throw new Error("Transaction reverted on-chain.");
+      await queryClient.invalidateQueries(); // refresh every on-chain read
+      return hash;
+    },
+    [writeContractAsync, publicClient, queryClient],
+  );
+  return { writeContractAsync: write };
+}
 
 /* -------------------------------------------------------------------------- */
 /*  IDRX                                                                      */
@@ -35,7 +63,7 @@ export function useIDRXAllowance(owner?: `0x${string}`, spender?: `0x${string}`)
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Sukuk Vault — reads                                                       */
+/*  Sukuk Vault, reads                                                       */
 /* -------------------------------------------------------------------------- */
 
 export function useVaultState() {
@@ -108,6 +136,24 @@ export function useMaxRedeem(address?: `0x${string}`) {
   return { ...result, data: result.data as bigint | undefined };
 }
 
+export function useHasRole(role: "PROTOCOL_ROLE" | "AUDITOR_ROLE", account?: `0x${string}`) {
+  const roleHash = useReadContract({
+    address: CONTRACTS.sukukVault,
+    abi: SUKUK_VAULT_ABI,
+    functionName: role,
+    chainId: sepolia.id,
+  });
+  const result = useReadContract({
+    address: CONTRACTS.sukukVault,
+    abi: SUKUK_VAULT_ABI,
+    functionName: "hasRole",
+    args: roleHash.data && account ? [roleHash.data as `0x${string}`, account] : undefined,
+    query: { enabled: !!roleHash.data && !!account },
+    chainId: sepolia.id,
+  });
+  return { ...result, data: result.data as boolean | undefined };
+}
+
 export function useVaultPaused() {
   const result = useReadContract({
     address: CONTRACTS.sukukVault,
@@ -118,12 +164,37 @@ export function useVaultPaused() {
   return { ...result, data: result.data as boolean | undefined };
 }
 
+/**
+ * Owners and signature threshold read from the auditor Safe itself, so the UI never
+ * states a policy the Safe does not enforce.
+ */
+export function useSafePolicy() {
+  const threshold = useReadContract({
+    address: ADDRESSES.auditorMultisig,
+    abi: SAFE_ABI,
+    functionName: "getThreshold",
+    chainId: sepolia.id,
+  });
+  const owners = useReadContract({
+    address: ADDRESSES.auditorMultisig,
+    abi: SAFE_ABI,
+    functionName: "getOwners",
+    chainId: sepolia.id,
+  });
+  return {
+    threshold: threshold.data as bigint | undefined,
+    owners: owners.data as readonly `0x${string}`[] | undefined,
+    isLoading: threshold.isLoading || owners.isLoading,
+    isError: threshold.isError || owners.isError,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
-/*  Writes — Investor actions                                                  */
+/*  Writes, Investor actions                                                  */
 /* -------------------------------------------------------------------------- */
 
 export function useApproveIDRX() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     approve: (spender: `0x${string}`, amount: bigint) =>
       writeContractAsync({
@@ -137,7 +208,7 @@ export function useApproveIDRX() {
 }
 
 export function useSukukDeposit() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     deposit: (assets: bigint, receiver: `0x${string}`) =>
       writeContractAsync({
@@ -151,7 +222,7 @@ export function useSukukDeposit() {
 }
 
 export function useSukukRedeem() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     redeem: (shares: bigint, receiver: `0x${string}`, owner: `0x${string}`) =>
       writeContractAsync({
@@ -165,12 +236,12 @@ export function useSukukRedeem() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Writes — Admin (PROTOCOL_ROLE) actions                                     */
+/*  Writes, Admin (PROTOCOL_ROLE) actions                                     */
 /* -------------------------------------------------------------------------- */
 
 /** Step 1: createVault(maxQuota, duration, apy) */
 export function useCreateVault() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     createVault: (maxQuota: bigint, duration: bigint, apy: bigint) =>
       writeContractAsync({
@@ -185,7 +256,7 @@ export function useCreateVault() {
 
 /** Step 3: protocolFill(amount) */
 export function useProtocolFill() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     protocolFill: (amount: bigint) =>
       writeContractAsync({
@@ -200,7 +271,7 @@ export function useProtocolFill() {
 
 /** Step 5: sendPayout(totalPayoutAmount) */
 export function useSendPayout() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     sendPayout: (totalPayoutAmount: bigint) =>
       writeContractAsync({
@@ -215,7 +286,7 @@ export function useSendPayout() {
 
 /** Close vault */
 export function useCloseVault() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     closeVault: () =>
       writeContractAsync({
@@ -230,7 +301,7 @@ export function useCloseVault() {
 
 /** Pause / Unpause */
 export function usePauseVault() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     pause: () =>
       writeContractAsync({
@@ -252,12 +323,12 @@ export function usePauseVault() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Writes — Auditor (AUDITOR_ROLE) actions                                    */
+/*  Writes, Auditor (AUDITOR_ROLE) actions                                    */
 /* -------------------------------------------------------------------------- */
 
 /** Step 4: approveVault() */
 export function useApproveVault() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     approveVault: () =>
       writeContractAsync({
@@ -272,7 +343,7 @@ export function useApproveVault() {
 
 /** Step 6: approvePayout() */
 export function useApprovePayout() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     approvePayout: () =>
       writeContractAsync({
@@ -286,11 +357,11 @@ export function useApprovePayout() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Writes — IDRX faucet (testnet only)                                        */
+/*  Writes, IDRX faucet (testnet only)                                        */
 /* -------------------------------------------------------------------------- */
 
 export function useIDRXMint() {
-  const { writeContractAsync } = useWriteContract();
+  const { writeContractAsync } = useMinedWrite();
   return {
     mint: (to: `0x${string}`, amount: bigint) =>
       writeContractAsync({

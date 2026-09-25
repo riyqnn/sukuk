@@ -2,196 +2,184 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useMotionValueEvent, useScroll } from "framer-motion";
 import { useAccount, useDisconnect } from "wagmi";
+import { ChevronDown, Copy, ExternalLink, Menu, X } from "lucide-react";
 import { compactAddress } from "@/lib/formatters";
-import { ADDRESSES, isAdminAddress } from "@/contracts/addresses";
-import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Copy, ExternalLink, Shield, Menu, X } from "lucide-react";
+import { useHasRole } from "@/lib/contracts";
 import { WalletConnect } from "@/components/wallet/WalletConnect";
-import { ScrollProgressBar } from "@/components/ui/motion";
-import { motion, AnimatePresence } from "framer-motion";
+import { ScrollProgressBar, EASE } from "@/components/ui/motion";
 
-const PUBLIC_NAV = [
-  { href: "/sukuk", label: "Sukuk" },
+const NAV = [
+  { href: "/sukuk", label: "Vault" },
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/transactions", label: "Transactions" },
+  { href: "/transactions", label: "Ledger" },
   { href: "/protocol", label: "Protocol" },
+  { href: "/auditor", label: "Auditor" },
 ];
+
+export function BrandMark({ className = "" }: { className?: string }) {
+  // Four quarter-tiles: the vault's quota, filled clockwise.
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <rect x="2" y="2" width="9" height="9" rx="2.5" fill="#16603f" />
+      <rect x="13" y="2" width="9" height="9" rx="2.5" fill="#8fc4a6" />
+      <rect x="13" y="13" width="9" height="9" rx="2.5" fill="#cdebd9" />
+      <rect x="2" y="13" width="9" height="9" rx="2.5" fill="#e3f3ea" />
+    </svg>
+  );
+}
 
 export function Header() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const { data: hasProtocolRole } = useHasRole("PROTOCOL_ROLE", address);
+  const isAdmin = isConnected && !!hasProtocolRole;
 
-  const isAdmin = isConnected && isAdminAddress(address);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const { scrollY } = useScroll();
+  useMotionValueEvent(scrollY, "change", (y) => setScrolled(y > 8));
+
+  const [lastPath, setLastPath] = useState(pathname);
+  if (pathname !== lastPath) {
+    setLastPath(pathname);
+    setMobileOpen(false);
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setMenuOpen(false);
+    function onClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
     }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setMobileOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, []);
 
-  useEffect(() => {
-    setMobileNavOpen(false);
-  }, [pathname]);
+  const links = isAdmin ? [...NAV, { href: "/admin", label: "Admin" }] : NAV;
 
   return (
     <>
       <ScrollProgressBar />
-      <header className="sticky top-0 z-50 bg-background/95 backdrop-blur-md border-b border-border/80 transition-all duration-300">
-        <div className="container h-16 flex items-center justify-between">
-          {/* Brand Logo & Wordmark */}
-          <div className="flex items-center gap-10">
-            <Link
-              href="/"
-              className="wordmark group text-foreground transition-transform duration-300 hover:scale-105"
-            >
-              <div className="brand-mark group-hover:rotate-45 transition-transform duration-500">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-              <span>SUKUK</span>
-            </Link>
+      <header
+        className={`sticky top-0 z-50 transition-[background-color,border-color,box-shadow] duration-300 ${
+          scrolled || mobileOpen
+            ? "border-b border-line bg-white/85 shadow-[0_8px_30px_-22px_#16603f55] backdrop-blur-xl"
+            : "border-b border-transparent bg-white"
+        }`}
+      >
+        <div className="container flex h-[68px] items-center justify-between gap-6">
+          <Link href="/" className="group flex items-center gap-2.5" aria-label="Sukuk Vault home">
+            <BrandMark className="h-6 w-6 transition-transform duration-500 [transition-timing-function:var(--ease)] group-hover:rotate-90" />
+            <span className="title text-[17px] tracking-tight">Sukuk Vault</span>
+          </Link>
 
-            {/* Desktop Navigation Links with Framer Motion Active Indicator */}
-            <nav className="hidden md:flex items-center gap-8 text-xs font-semibold" aria-label="Main Navigation">
-              {PUBLIC_NAV.map((n) => {
-                const isActive = pathname === n.href;
-                return (
-                  <Link
-                    key={n.href}
-                    href={n.href}
-                    className={`relative py-1 transition-colors duration-200 ${
-                      isActive
-                        ? "text-foreground font-bold"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {n.label}
-                    {isActive && (
-                      <motion.span
-                        layoutId="activeNavIndicator"
-                        className="absolute bottom-0 left-0 right-0 h-[2px] bg-ring rounded-full"
-                        transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                      />
-                    )}
-                  </Link>
-                );
-              })}
-
-              {isAdmin && (
+          <nav aria-label="Main" className="hidden items-center rounded-full border border-line bg-mist p-1 lg:flex">
+            {links.map((n) => {
+              const active = pathname === n.href;
+              return (
                 <Link
-                  href="/admin"
-                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200 ${
-                    pathname === "/admin"
-                      ? "bg-foreground text-background shadow-xs"
-                      : "text-emerald-800 bg-emerald-100/80 border border-emerald-300 hover:bg-emerald-200"
+                  key={n.href}
+                  href={n.href}
+                  aria-current={active ? "page" : undefined}
+                  className={`relative rounded-full px-4 py-2 text-[13px] font-medium transition-colors ${
+                    active ? "text-forest-deep" : "text-muted-foreground hover:text-ink"
                   }`}
                 >
-                  <Shield className="w-3.5 h-3.5" />
-                  Admin
+                  {active && (
+                    <motion.span
+                      layoutId="nav-pill"
+                      className="absolute inset-0 rounded-full border border-line bg-white shadow-[0_1px_2px_#0c1f170f]"
+                      transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                    />
+                  )}
+                  <span className="relative">{n.label}</span>
                 </Link>
-              )}
-            </nav>
-          </div>
+              );
+            })}
+          </nav>
 
-          {/* Right Network & Account trigger */}
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:inline-flex items-center gap-2 text-[0.6875rem] font-mono font-semibold px-2.5 py-1 rounded-full bg-secondary border border-border">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Sepolia</span>
-            </div>
+          <div className="flex items-center gap-2">
+            <span className="hidden items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-muted-foreground sm:inline-flex">
+              <span className="h-1.5 w-1.5 rounded-full bg-mint-3" aria-hidden="true" />
+              Sepolia
+            </span>
 
             {isConnected ? (
-              <div className="relative" ref={ref}>
+              <div className="relative" ref={menuRef}>
                 <button
-                  onClick={() => setMenuOpen(!menuOpen)}
+                  type="button"
+                  onClick={() => setMenuOpen((v) => !v)}
                   aria-expanded={menuOpen}
-                  aria-label="User Account Menu"
-                  className="flex items-center gap-2 text-xs font-mono font-semibold text-foreground bg-secondary border border-border px-3.5 py-1.5 rounded-full hover:bg-border/60 transition-all shadow-2xs"
+                  aria-haspopup="menu"
+                  className="btn btn-ghost btn-sm font-mono"
                 >
-                  <span>{address ? compactAddress(address) : ""}</span>
-                  {isAdmin && (
-                    <span className="text-[0.625rem] px-1.5 py-0.5 bg-emerald-200 text-emerald-900 rounded font-semibold">
-                      ADMIN
-                    </span>
-                  )}
-                  <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${menuOpen ? "rotate-180" : ""}`} />
+                  {address ? compactAddress(address) : ""}
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-300 ${menuOpen ? "rotate-180" : ""}`} aria-hidden="true" />
                 </button>
 
                 <AnimatePresence>
                   {menuOpen && (
                     <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                      role="menu"
+                      initial={{ opacity: 0, y: 8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.96 }}
-                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                      className="absolute right-0 top-full mt-2 w-64 bg-background border border-border rounded-xl shadow-xl py-2 z-50"
+                      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                      transition={{ duration: 0.25, ease: EASE }}
+                      className="absolute right-0 top-full z-50 mt-2 w-64 origin-top-right overflow-hidden rounded-2xl border border-line bg-white p-1.5 shadow-[0_24px_48px_-24px_#0c1f1740]"
                     >
-                      <div className="px-4 py-2.5 border-b border-border/80">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">Connected Account</p>
-                          {isAdmin && (
-                            <span className="text-[0.625rem] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-mono font-semibold">
-                              ADMIN
-                            </span>
-                          )}
-                        </div>
-                        <p className="font-mono text-xs mt-1 font-semibold text-foreground">
-                          {address ? compactAddress(address) : ""}
-                        </p>
+                      <div className="px-3 py-2.5">
+                        <p className="label">Connected wallet</p>
+                        <p className="mt-1 font-mono text-[13px] font-medium">{address ? compactAddress(address) : ""}</p>
+                        {isAdmin && <p className="mt-1 text-xs text-forest">Holds PROTOCOL_ROLE</p>}
                       </div>
-
-                      {isAdmin && (
-                        <Link
-                          href="/admin"
-                          className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-emerald-800 font-semibold hover:bg-emerald-50 transition-colors"
-                          onClick={() => setMenuOpen(false)}
-                        >
-                          <Shield className="w-3.5 h-3.5" />
-                          Admin Control Panel
-                        </Link>
-                      )}
-
+                      <div className="my-1 h-px bg-line" />
                       <button
-                        className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-foreground hover:bg-secondary transition-colors font-semibold"
+                        role="menuitem"
+                        type="button"
                         onClick={() => {
                           navigator.clipboard.writeText(address ?? "");
                           setMenuOpen(false);
                         }}
+                        className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px] font-medium hover:bg-mist"
                       >
-                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                        Copy Address
+                        <Copy className="h-4 w-4 text-muted-foreground" aria-hidden="true" /> Copy address
                       </button>
-
                       <a
+                        role="menuitem"
                         href={`https://sepolia.etherscan.io/address/${address}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-foreground hover:bg-secondary transition-colors font-semibold"
+                        className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] font-medium hover:bg-mist"
                       >
-                        <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-                        View on Explorer
+                        <ExternalLink className="h-4 w-4 text-muted-foreground" aria-hidden="true" /> View on Etherscan
                       </a>
-
-                      <div className="border-t border-border mt-1 pt-1">
-                        <button
-                          className="w-full text-left px-4 py-2 text-xs text-red-600 hover:bg-red-50 font-semibold transition-colors"
-                          onClick={() => {
-                            disconnect();
-                            setMenuOpen(false);
-                          }}
-                        >
-                          Disconnect Wallet
-                        </button>
-                      </div>
+                      <button
+                        role="menuitem"
+                        type="button"
+                        onClick={() => {
+                          disconnect();
+                          setMenuOpen(false);
+                        }}
+                        className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-[13px] font-medium text-danger hover:bg-danger-soft"
+                      >
+                        Disconnect
+                      </button>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -200,57 +188,50 @@ export function Header() {
               <WalletConnect />
             )}
 
-            {/* Mobile menu trigger */}
             <button
-              onClick={() => setMobileNavOpen(!mobileNavOpen)}
-              aria-expanded={mobileNavOpen}
-              aria-label="Toggle Mobile Navigation"
-              className="md:hidden p-2 rounded-full border border-border text-foreground hover:bg-secondary transition-colors"
+              type="button"
+              onClick={() => setMobileOpen((v) => !v)}
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-nav"
+              aria-label={mobileOpen ? "Close navigation" : "Open navigation"}
+              className="grid h-10 w-10 place-items-center rounded-full border border-line text-ink transition-colors hover:bg-mist lg:hidden"
             >
-              {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              {mobileOpen ? <X className="h-[18px] w-[18px]" /> : <Menu className="h-[18px] w-[18px]" />}
             </button>
           </div>
         </div>
 
-        {/* Mobile Navigation Menu */}
         <AnimatePresence>
-          {mobileNavOpen && (
+          {mobileOpen && (
             <motion.nav
+              id="mobile-nav"
+              aria-label="Mobile"
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-              className="md:hidden overflow-hidden border-t border-border bg-background px-6 py-4 space-y-3"
-              aria-label="Mobile Navigation"
+              transition={{ duration: 0.4, ease: EASE }}
+              className="overflow-hidden border-t border-line lg:hidden"
             >
-              <div className="flex flex-col space-y-1">
-                {PUBLIC_NAV.map((n) => (
-                  <Link
+              <ul className="container flex flex-col py-3">
+                {links.map((n, i) => (
+                  <motion.li
                     key={n.href}
-                    href={n.href}
-                    className={`px-4 py-2.5 rounded-lg text-sm transition-colors ${
-                      pathname === n.href
-                        ? "bg-secondary text-foreground font-bold"
-                        : "text-muted-foreground hover:text-foreground font-medium"
-                    }`}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.35, delay: 0.04 * i, ease: EASE }}
                   >
-                    {n.label}
-                  </Link>
+                    <Link
+                      href={n.href}
+                      aria-current={pathname === n.href ? "page" : undefined}
+                      className={`flex min-h-12 items-center justify-between rounded-xl px-3 text-[15px] font-medium ${
+                        pathname === n.href ? "bg-mint text-forest-deep" : "text-ink hover:bg-mist"
+                      }`}
+                    >
+                      {n.label}
+                    </Link>
+                  </motion.li>
                 ))}
-                {isAdmin && (
-                  <Link
-                    href="/admin"
-                    className={`px-4 py-2.5 rounded-lg text-sm font-semibold inline-flex items-center gap-2 transition-colors ${
-                      pathname === "/admin"
-                        ? "bg-foreground text-background"
-                        : "text-emerald-800 bg-emerald-50 border border-emerald-200"
-                    }`}
-                  >
-                    <Shield className="w-4 h-4" />
-                    Admin Panel
-                  </Link>
-                )}
-              </div>
+              </ul>
             </motion.nav>
           )}
         </AnimatePresence>

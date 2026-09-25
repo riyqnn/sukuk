@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
@@ -53,6 +54,10 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     /// @notice Guards `createVault()` so it can only be executed once.
     bool public vaultCreated;
 
+    /// @dev Internally tracked assets. Direct IDRX transfers ("donations") are NOT
+    ///      counted, so they cannot move the share price or the quota check.
+    uint256 private _managedAssets;
+
     // ------------------------------------------------------------------------
     // Events — one per state transition and financial action (on-chain audit trail)
     // ------------------------------------------------------------------------
@@ -101,12 +106,16 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         address admin_,
         address auditorMultisig_
     ) ERC20(name_, symbol_) ERC4626(underlying_) {
+        require(address(underlying_).code.length > 0, "SukukVault: underlying not a contract");
         require(admin_ != address(0), "SukukVault: zero admin");
         require(auditorMultisig_ != address(0), "SukukVault: zero auditor");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
         _grantRole(PROTOCOL_ROLE, admin_);
         _grantRole(AUDITOR_ROLE, auditorMultisig_);
+        // Only the auditor Safe can manage AUDITOR_ROLE; the protocol admin cannot
+        // grant itself the auditor's approval power.
+        _setRoleAdmin(AUDITOR_ROLE, AUDITOR_ROLE);
 
         // Vault starts OPEN (funding) but maxQuota is 0, so deposits are effectively
         // blocked until createVault() sets a real quota.
@@ -166,9 +175,11 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         if (state != VaultErrors.VaultState.OPEN) {
             revert VaultErrors.InvalidState(state, VaultErrors.VaultState.OPEN);
         }
+        if (assets == 0) revert VaultErrors.ZeroAmount();
         if (totalAssets() + assets > maxQuota) revert VaultErrors.QuotaExceeded();
 
         shares = super.deposit(assets, receiver);
+        if (shares == 0) revert VaultErrors.ZeroAmount();
 
         emit Deposited(receiver, assets, shares);
     }
@@ -194,6 +205,7 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
             revert VaultErrors.InvalidState(state, VaultErrors.VaultState.OPEN);
         }
 
+        if (shares == 0) revert VaultErrors.ZeroAmount();
         assets = previewMint(shares);
         if (totalAssets() + assets > maxQuota) revert VaultErrors.QuotaExceeded();
 
@@ -220,11 +232,12 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         if (state != VaultErrors.VaultState.OPEN) {
             revert VaultErrors.InvalidState(state, VaultErrors.VaultState.OPEN);
         }
+        if (amount == 0) revert VaultErrors.ZeroAmount();
         if (totalAssets() + amount > maxQuota) revert VaultErrors.QuotaExceeded();
 
         shares = previewDeposit(amount);
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
-        _mint(msg.sender, shares);
+        if (shares == 0) revert VaultErrors.ZeroAmount();
+        _deposit(msg.sender, msg.sender, amount, shares); // emits ERC-4626 Deposit
 
         emit Deposited(msg.sender, amount, shares);
         emit ProtocolFilled(msg.sender, amount, shares);
@@ -245,6 +258,8 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         if (state != VaultErrors.VaultState.OPEN) {
             revert VaultErrors.InvalidState(state, VaultErrors.VaultState.OPEN);
         }
+
+        if (totalSupply() == 0) revert VaultErrors.VaultEmpty();
 
         state = VaultErrors.VaultState.LOCKED;
         lockStartTime = block.timestamp;
@@ -309,6 +324,7 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
         // Checks-Effects-Interactions: update state before external token transfer.
         state = VaultErrors.VaultState.MATURED;
+        _managedAssets += totalPayoutAmount;
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), totalPayoutAmount);
 
         emit PayoutFunded(totalPayoutAmount);
@@ -340,7 +356,7 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
     /**
      * @notice Burns `shares` sSUKUK and transfers the proportional IDRX (principal +
      *         yield) to `receiver`.
-     * @dev Overrides ERC-4626 `redeem`. Guard: vault must be APPROVED_FOR_PAYOUT.
+     * @dev Overrides ERC-4626 `redeem`. Guard: vault must be APPROVED_FOR_PAYOUT or CLOSED.
      * @param shares   Number of sSUKUK shares to burn.
      * @param receiver Address receiving the IDRX proceeds.
      * @param owner    Address whose shares are burned.
@@ -354,9 +370,8 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         whenNotPaused
         returns (uint256 assets)
     {
-        if (state != VaultErrors.VaultState.APPROVED_FOR_PAYOUT) {
-            revert VaultErrors.InvalidState(state, VaultErrors.VaultState.APPROVED_FOR_PAYOUT);
-        }
+        _requireRedeemable();
+        if (shares == 0) revert VaultErrors.ZeroAmount();
 
         assets = super.redeem(shares, receiver, owner);
 
@@ -381,9 +396,8 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
         whenNotPaused
         returns (uint256 shares)
     {
-        if (state != VaultErrors.VaultState.APPROVED_FOR_PAYOUT) {
-            revert VaultErrors.InvalidState(state, VaultErrors.VaultState.APPROVED_FOR_PAYOUT);
-        }
+        _requireRedeemable();
+        if (assets == 0) revert VaultErrors.ZeroAmount();
 
         shares = super.withdraw(assets, receiver, owner);
 
@@ -392,7 +406,8 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
     /**
      * @notice Marks the vault as fully closed. Optional terminal step.
-     * @dev Transition: APPROVED_FOR_PAYOUT -> CLOSED.
+     * @dev Transition: APPROVED_FOR_PAYOUT -> CLOSED. Redemptions stay open after close
+     *      so unredeemed investors are never stranded.
      */
     function closeVault() external onlyRole(PROTOCOL_ROLE) {
         if (state != VaultErrors.VaultState.APPROVED_FOR_PAYOUT) {
@@ -425,7 +440,57 @@ contract SukukVault is ERC4626, AccessControl, Pausable, ReentrancyGuard {
 
     // ------------------------------------------------------------------------
     // ERC-4626 helpers
-    // ------------------------------------------------------------------------
+
+    /// @notice Internally tracked assets (deposits + funded payout - withdrawals).
+    function totalAssets() public view override returns (uint256) {
+        return _managedAssets;
+    }
+
+    /// @dev EIP-4626: returns 0 when deposits are disabled, else remaining quota.
+    function maxDeposit(address) public view override returns (uint256) {
+        if (paused() || state != VaultErrors.VaultState.OPEN) return 0;
+        uint256 assets = totalAssets();
+        return assets >= maxQuota ? 0 : maxQuota - assets;
+    }
+
+    /// @dev EIP-4626: returns 0 when minting is disabled, else remaining quota in shares.
+    function maxMint(address receiver) public view override returns (uint256) {
+        return _convertToShares(maxDeposit(receiver), Math.Rounding.Floor);
+    }
+
+    /// @dev EIP-4626: returns 0 when withdrawals are disabled.
+    function maxWithdraw(address owner_) public view override returns (uint256) {
+        return _redeemable() ? super.maxWithdraw(owner_) : 0;
+    }
+
+    /// @dev EIP-4626: returns 0 when redemptions are disabled.
+    function maxRedeem(address owner_) public view override returns (uint256) {
+        return _redeemable() ? super.maxRedeem(owner_) : 0;
+    }
+
+    function _redeemable() internal view returns (bool) {
+        return !paused()
+            && (state == VaultErrors.VaultState.APPROVED_FOR_PAYOUT || state == VaultErrors.VaultState.CLOSED);
+    }
+
+    function _requireRedeemable() internal view {
+        if (state != VaultErrors.VaultState.APPROVED_FOR_PAYOUT && state != VaultErrors.VaultState.CLOSED) {
+            revert VaultErrors.InvalidState(state, VaultErrors.VaultState.APPROVED_FOR_PAYOUT);
+        }
+    }
+
+    function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
+        super._deposit(caller, receiver, assets, shares);
+        _managedAssets += assets;
+    }
+
+    function _withdraw(address caller, address receiver, address owner_, uint256 assets, uint256 shares)
+        internal
+        override
+    {
+        _managedAssets -= assets; // effects before the token transfer
+        super._withdraw(caller, receiver, owner_, assets, shares);
+    }
 
     /**
      * @notice Returns the number of decimals used by the share token.

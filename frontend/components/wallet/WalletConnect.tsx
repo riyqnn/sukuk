@@ -7,7 +7,6 @@ export function WalletConnect() {
   const { connectors, connect } = useConnect();
 
   const handleDirectInjectedConnect = async (openConnectModal: () => void) => {
-    // 1. Try injected connector first
     const injectedConn = connectors.find((c) => c.id === "injected" || c.type === "injected");
     if (injectedConn) {
       try {
@@ -21,7 +20,7 @@ export function WalletConnect() {
         console.warn("Direct injected connect notice:", err);
       }
     }
-    // 2. Fallback to RainbowKit Modal
+    // No injected wallet, or it refused: fall back to the RainbowKit modal.
     openConnectModal();
   };
 
@@ -55,7 +54,7 @@ export function WalletConnect() {
                   <button
                     onClick={() => handleDirectInjectedConnect(openConnectModal)}
                     type="button"
-                    className="px-3.5 py-1.5 bg-emerald-800 text-white text-xs font-medium rounded-md hover:bg-emerald-900 transition-colors shadow-sm"
+                    className="btn btn-primary btn-sm"
                   >
                     Connect Wallet
                   </button>
@@ -67,7 +66,7 @@ export function WalletConnect() {
                   <button
                     onClick={openChainModal}
                     type="button"
-                    className="px-3.5 py-1.5 bg-red-600 text-white text-xs font-medium rounded-md hover:bg-red-700 transition-colors shadow-sm"
+                    className="btn btn-sm bg-danger text-white hover:opacity-90"
                   >
                     Wrong network
                   </button>
@@ -79,7 +78,7 @@ export function WalletConnect() {
                   <button
                     onClick={openAccountModal}
                     type="button"
-                    className="px-3.5 py-1.5 bg-surface border text-foreground text-xs font-mono font-medium rounded-md hover:bg-divider transition-colors shadow-sm"
+                    className="btn btn-ghost btn-sm font-mono"
                   >
                     {account.displayName}
                   </button>

@@ -39,3 +39,12 @@ Thumbs.db
 .vscode/
 .idea/
 .vercel
+
+# Local tooling (code index, per-user agent settings)
+.codegraph/
+.claude/settings.local.json
+
+# Test coverage & keys
+coverage/
+coverage.json
+*.pem

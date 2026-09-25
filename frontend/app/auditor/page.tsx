@@ -1,412 +1,287 @@
 "use client";
 
+import { useState } from "react";
 import { useAccount } from "wagmi";
+import { AnimatePresence, motion } from "framer-motion";
+import { AlertTriangle, ArrowUpRight, Check, ExternalLink, RefreshCw } from "lucide-react";
 import { ADDRESSES } from "@/contracts/addresses";
-import { useVaultState, useVaultParameters, useVaultTotals } from "@/lib/contracts";
+import { useSafePolicy, useVaultParameters, useVaultState, useVaultTotals } from "@/lib/contracts";
 import {
-  proposeSafeTransaction,
   fetchPendingSafeTransactions,
   fetchSafeInfo,
-  getEvmProvider,
   getErrorMessage,
-  type SafePendingTransaction,
+  getEvmProvider,
+  proposeSafeTransaction,
   type SafeInfo,
+  type SafePendingTransaction,
 } from "@/lib/safe";
+import { compactAddress, formatIDRX, toDisplayNumber } from "@/lib/formatters";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { KeyFigures } from "@/components/ui/KeyFigures";
+import { Panel } from "@/components/ui/Panel";
+import { StepAction } from "@/components/ui/StepAction";
 import { StateBadge } from "@/components/ui/StateBadge";
-import { formatIDRX, stateLabel, compactAddress } from "@/lib/formatters";
-import { useState } from "react";
-import { ShieldCheck, AlertTriangle, CheckCircle2, Loader2, ArrowUpRight, Clock, Send, RefreshCw } from "lucide-react";
-import {
-  AnimatedNumber,
-  TiltCard,
-  MagneticButton,
-  PageTransition,
-  StaggerContainer,
-  StaggerItem,
-  FadeIn,
-  PulseGlowBadge,
-} from "@/components/ui/motion";
-import { motion, AnimatePresence } from "framer-motion";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { WalletConnect } from "@/components/wallet/WalletConnect";
+import { AnimatedNumber, EASE, PageTransition, Press, Reveal } from "@/components/ui/motion";
 
 export default function AuditorPage() {
   const { address, isConnected } = useAccount();
-  const { data: vaultStateRaw, refetch: refetchState } = useVaultState();
+  const { data: vaultStateRaw, isLoading: stateLoading, refetch: refetchState } = useVaultState();
   const params = useVaultParameters();
   const totals = useVaultTotals();
+  const safePolicy = useSafePolicy();
 
   const [loadingStep, setLoadingStep] = useState<"vault" | "payout" | null>(null);
-  const [txHash, setTxHash] = useState<string>("");
-  const [signature, setSignature] = useState<string>("");
-  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [txHash, setTxHash] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [pendingTxs, setPendingTxs] = useState<SafePendingTransaction[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
   const [safeInfo, setSafeInfo] = useState<SafeInfo | null>(null);
   const [hasLoadedQueue, setHasLoadedQueue] = useState(false);
 
   const s = Number(vaultStateRaw ?? 0);
-  const maxQuota = Number((params.maxQuota.data ?? 0n) as bigint) / 1e18;
-  const totalAssets = Number((totals.totalAssets.data ?? 0n) as bigint) / 1e18;
-  const totalSupply = Number((totals.totalSupply.data ?? 0n) as bigint) / 1e18;
+  const maxQuota = toDisplayNumber(params.maxQuota.data);
+  const totalAssets = toDisplayNumber(totals.totalAssets.data);
+  const totalSupply = toDisplayNumber(totals.totalSupply.data);
   const filledPct = maxQuota > 0 ? (totalAssets / maxQuota) * 100 : 0;
   const exchangeRate = totalSupply > 0 ? totalAssets / totalSupply : 1;
-
   const safeQueueUrl = `https://app.safe.global/transactions/queue?safe=sep:${ADDRESSES.auditorMultisig}`;
+  const threshold = safePolicy.threshold !== undefined ? Number(safePolicy.threshold) : safeInfo?.threshold;
+  const policy =
+    safePolicy.threshold !== undefined && safePolicy.owners
+      ? `${safePolicy.threshold}-of-${safePolicy.owners.length}`
+      : null;
 
-  const loadData = async () => {
+  const canLock = s === 0 && !!params.vaultCreated.data && totalSupply > 0;
+  const canRelease = s === 2;
+
+  async function loadQueue() {
     setLoadingPending(true);
-    const [pendingResults, info] = await Promise.all([
-      fetchPendingSafeTransactions(),
-      fetchSafeInfo(),
-    ]);
-    setPendingTxs(pendingResults);
+    const [pending, info] = await Promise.all([fetchPendingSafeTransactions(), fetchSafeInfo()]);
+    setPendingTxs(pending);
     setSafeInfo(info);
     setHasLoadedQueue(true);
     setLoadingPending(false);
-  };
+  }
 
   async function handlePropose(functionName: "approveVault" | "approvePayout") {
     if (!address) {
-      setErrorMsg("Please connect your wallet first.");
+      setErrorMsg("Connect a wallet that owns the Safe first.");
       return;
     }
     const provider = getEvmProvider();
     if (!provider) {
-      setErrorMsg("No Web3 EVM provider detected in browser.");
+      setErrorMsg("No browser wallet was detected.");
       return;
     }
-
     try {
       setLoadingStep(functionName === "approveVault" ? "vault" : "payout");
       setErrorMsg("");
       setTxHash("");
-      setSignature("");
-
       await provider.request({ method: "eth_requestAccounts" });
-
-      const res = await proposeSafeTransaction({
-        functionName,
-        provider,
-        signerAddress: address,
-      });
-
+      const res = await proposeSafeTransaction({ functionName, provider, signerAddress: address });
       setTxHash(res.safeTxHash);
-      setSignature(res.signature);
-      await loadData();
+      await loadQueue();
       refetchState();
     } catch (e: unknown) {
-      console.error("Safe SDK Error:", e);
+      console.error("Safe SDK error:", e);
       setErrorMsg(getErrorMessage(e));
     } finally {
       setLoadingStep(null);
     }
   }
 
+  const proposeButton = (fn: "approveVault" | "approvePayout", ready: boolean) =>
+    !isConnected ? (
+      <WalletConnect />
+    ) : (
+      <Press className="w-full">
+        <button
+          type="button"
+          onClick={() => handlePropose(fn)}
+          disabled={!ready || loadingStep !== null}
+          className="btn btn-primary w-full"
+        >
+          {loadingStep === (fn === "approveVault" ? "vault" : "payout") ? "Signing the Safe proposal…" : `Propose ${fn}()`}
+        </button>
+      </Press>
+    );
+
   return (
     <PageTransition>
-      <div className="container py-12 space-y-10">
-        {/* Header */}
-        <FadeIn direction="down" className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 border-b border-border">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-secondary border border-border flex items-center justify-center text-ring shadow-sm">
-              <ShieldCheck className="w-7 h-7" />
-            </div>
-            <div className="space-y-1">
-              <div className="eyebrow">
-                <span className="eyebrow-line" />
-                <span>01 &middot; SAFE MULTI-SIG ORACLE</span>
-              </div>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-3">
-                Auditor Portal
-              </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground font-mono">
-                Compliance Verification & Multi-Signature Threshold (2-of-3)
-              </p>
-            </div>
-          </div>
-
-          <MagneticButton>
-            <a href={safeQueueUrl} target="_blank" rel="noreferrer" className="button">
-              <span>Open Safe Workspace</span>
-              <span className="button-arrow">
-                <ArrowUpRight className="w-3.5 h-3.5" />
+      <div className="container pb-24">
+        <PageHeader
+          kicker="Auditor portal"
+          title="The two gates the Safe controls"
+          description="Proposals are signed here and sent to the Safe Transaction Service. They execute once enough Safe owners confirm them."
+          aside={
+            <div className="flex flex-wrap items-center gap-3 text-[13px]">
+              <span className="chip bg-pistachio text-forest-deep">
+                {safePolicy.isLoading ? "Reading policy…" : policy ? `${policy} signatures` : "Policy unavailable"}
               </span>
-            </a>
-          </MagneticButton>
-        </FadeIn>
-
-        {/* Safe Governance Banner */}
-        <FadeIn direction="up" delay={0.1} className="bg-card border border-border rounded-2xl p-6 space-y-3 shadow-xs">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-            <div className="flex items-center gap-2">
-              <PulseGlowBadge text="Safe Multi-Sig Governance Account" color="emerald" />
-              <span className="text-[0.6875rem] px-2.5 py-0.5 bg-ring/10 text-ring rounded-full font-mono font-bold border border-ring/30">
-                2-of-3 Threshold
-              </span>
+              <a
+                href={`https://app.safe.global/home?safe=sep:${ADDRESSES.auditorMultisig}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 font-mono text-muted-foreground hover:text-forest"
+              >
+                {compactAddress(ADDRESSES.auditorMultisig)} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </a>
             </div>
-            <span className="font-mono text-xs font-semibold text-muted-foreground">{ADDRESSES.auditorMultisig}</span>
-          </div>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Audit actions (<strong>Audit 1: approveVault</strong> & <strong>Audit 2: approvePayout</strong>) are processed through the Safe SDK. Proposing an action creates and signs a transaction dispatched to the Safe Multi-Sig Queue for signer execution.
-          </p>
-        </FadeIn>
+          }
+          actions={
+            <Press>
+              <a href={safeQueueUrl} target="_blank" rel="noreferrer" className="btn btn-ghost">
+                Open Safe queue
+                <span className="btn-icon">
+                  <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+              </a>
+            </Press>
+          }
+        />
 
-        {/* Vault Status Matrix */}
-        <StaggerContainer className="grid grid-cols-2 sm:grid-cols-4 gap-5" staggerDelay={0.07}>
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">Vault State</span>
-                <div>
-                  {vaultStateRaw !== undefined ? <StateBadge state={s} /> : <span className="text-xs text-muted-foreground">Loading…</span>}
-                </div>
-              </div>
-            </TiltCard>
-          </StaggerItem>
+        <Reveal delay={0.05}>
+          <KeyFigures
+            figures={[
+              {
+                label: "Vault state",
+                lead: true,
+                value: stateLoading ? <Skeleton className="h-6 w-28" /> : <StateBadge state={s} />,
+                note: canLock ? "Ready for approveVault()" : canRelease ? "Ready for approvePayout()" : "No gate is open for the Safe",
+              },
+              { label: "Subscribed", value: <AnimatedNumber value={totalAssets} suffix=" IDRX" />, note: `${filledPct.toFixed(1)}% of the quota` },
+              { label: "Shares issued", value: <AnimatedNumber value={totalSupply} />, note: "approveVault() needs at least one" },
+              { label: "Share price", value: exchangeRate.toFixed(4), note: "IDRX per sSUKUK" },
+            ]}
+          />
+        </Reveal>
 
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">Total Assets</span>
-                <p className="text-xl font-mono font-bold text-foreground">
-                  <AnimatedNumber value={totalAssets} suffix=" IDRX" decimals={0} />
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
+        <div className="mt-8 grid gap-8 lg:grid-cols-2">
+          <StepAction
+            step="04"
+            title="Lock the round"
+            call="approveVault()"
+            description="Closes subscription and locks the deposited IDRX until maturity. Moves the vault from Open to Locked."
+            requires="Open"
+            current={s}
+            ready={canLock}
+            checks={[
+              { label: "Round configured", ok: !!params.vaultCreated.data },
+              { label: "Vault is Open", ok: s === 0 },
+              { label: `Shares issued (${formatIDRX(totalSupply)})`, ok: totalSupply > 0 },
+            ]}
+            delay={0.05}
+          >
+            {proposeButton("approveVault", canLock)}
+          </StepAction>
 
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">Subscription Capacity</span>
-                <p className="text-xl font-mono font-bold text-foreground">
-                  <AnimatedNumber value={filledPct} suffix="%" decimals={1} />
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">Exchange Rate</span>
-                <p className="text-xl font-mono font-bold text-ring">{exchangeRate.toFixed(4)}×</p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-        </StaggerContainer>
-
-        {/* Action Cards */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Audit 1 */}
-          <FadeIn direction="right" delay={0.15}>
-            <TiltCard maxTilt={4} className={`h-full ${s === 0 && params.vaultCreated.data ? "" : "opacity-80"}`}>
-              <div className="bg-card border border-border rounded-2xl p-6 space-y-6 shadow-xs h-full flex flex-col justify-between">
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <span className="text-[0.6875rem] font-bold text-muted-foreground uppercase tracking-wider">AUDIT 1</span>
-                    <h2 className="text-xl font-bold text-foreground">Approve Vault & Lock</h2>
-                    <p className="text-xs text-muted-foreground">Verifies underlying Sukuk RWA asset backing and locks vault funds (OPEN &rarr; LOCKED).</p>
-                    <p className="text-[0.6875rem] text-muted-foreground font-mono mt-1">Required State: OPEN (0) &middot; Current: {stateLabel(s)}</p>
-                  </div>
-
-                  <div className="bg-secondary/50 rounded-xl p-4 space-y-2.5 border border-border">
-                    <p className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-bold">Audit 1 Verification Checklist</p>
-                    <CheckItem label="Vault configured & created on-chain" checked={!!params.vaultCreated.data} />
-                    <CheckItem label="Vault state is OPEN" checked={s === 0} />
-                    <CheckItem label={`Total Subscribed: ${filledPct.toFixed(1)}% (${formatIDRX(totalAssets)} IDRX)`} checked={filledPct > 0} />
-                    <CheckItem label="Underlying physical Sukuk asset custodian receipt verified" checked={s === 0} />
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-border">
-                  {!isConnected ? (
-                    <p className="text-xs text-muted-foreground text-center">Connect wallet to propose Safe Multi-Sig transaction.</p>
-                  ) : (
-                    <MagneticButton className="w-full">
-                      <button
-                        onClick={() => handlePropose("approveVault")}
-                        disabled={s !== 0 || !params.vaultCreated.data || loadingStep !== null}
-                        className="w-full button justify-center text-xs font-bold py-3 disabled:opacity-40"
-                      >
-                        {loadingStep === "vault" ? (
-                          <><Loader2 className="w-4 h-4 animate-spin" /> Processing Safe SDK Proposal…</>
-                        ) : (
-                          <><Send className="w-4 h-4" /> Propose approveVault() to Safe</>
-                        )}
-                      </button>
-                    </MagneticButton>
-                  )}
-                </div>
-              </div>
-            </TiltCard>
-          </FadeIn>
-
-          {/* Audit 2 */}
-          <FadeIn direction="left" delay={0.15}>
-            <TiltCard maxTilt={4} className={`h-full ${s === 2 ? "" : "opacity-80"}`}>
-              <div className="bg-card border border-border rounded-2xl p-6 space-y-6 shadow-xs h-full flex flex-col justify-between">
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <span className="text-[0.6875rem] font-bold text-muted-foreground uppercase tracking-wider">AUDIT 2</span>
-                    <h2 className="text-xl font-bold text-foreground">Approve Payout & Redeem</h2>
-                    <p className="text-xs text-muted-foreground">Verifies yield completion and enables share redemptions (MATURED &rarr; APPROVED_FOR_PAYOUT).</p>
-                    <p className="text-[0.6875rem] text-muted-foreground font-mono mt-1">Required State: MATURED (2) &middot; Current: {stateLabel(s)}</p>
-                  </div>
-
-                  <div className="bg-secondary/50 rounded-xl p-4 space-y-2.5 border border-border">
-                    <p className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-bold">Audit 2 Verification Checklist</p>
-                    <CheckItem label="Vault state is MATURED" checked={s === 2} />
-                    <CheckItem label={`Ready Assets: ${formatIDRX(totalAssets)} IDRX`} checked={totalAssets > 0} />
-                    <CheckItem label={`Exchange Rate Parity: ${exchangeRate.toFixed(4)}×`} checked={exchangeRate >= 1} />
-                    <CheckItem label="Yield distribution calculation approved by Compliance" checked={s === 2} />
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-border">
-                  {!isConnected ? (
-                    <p className="text-xs text-muted-foreground text-center">Connect wallet to propose Safe Multi-Sig transaction.</p>
-                  ) : (
-                    <MagneticButton className="w-full">
-                      <button
-                        onClick={() => handlePropose("approvePayout")}
-                        disabled={s !== 2 || loadingStep !== null}
-                        className="w-full button justify-center text-xs font-bold py-3 disabled:opacity-40"
-                      >
-                        {loadingStep === "payout" ? (
-                          <><Loader2 className="w-4 h-4 animate-spin" /> Processing Safe SDK Proposal…</>
-                        ) : (
-                          <><Send className="w-4 h-4" /> Propose approvePayout() to Safe</>
-                        )}
-                      </button>
-                    </MagneticButton>
-                  )}
-                </div>
-              </div>
-            </TiltCard>
-          </FadeIn>
+          <StepAction
+            step="06"
+            title="Release the payout"
+            call="approvePayout()"
+            description="Confirms the funded payout and opens redemption for every holder. Moves the vault from Matured to Approved for payout."
+            requires="Matured"
+            current={s}
+            ready={canRelease}
+            checks={[
+              { label: "Vault is Matured", ok: s === 2 },
+              { label: `Assets in vault (${formatIDRX(totalAssets)} IDRX)`, ok: totalAssets > 0 },
+              { label: `Share price at or above 1 (${exchangeRate.toFixed(4)})`, ok: exchangeRate >= 1 },
+            ]}
+            delay={0.1}
+          >
+            {proposeButton("approvePayout", canRelease)}
+          </StepAction>
         </div>
 
-        {/* Feedback banner */}
         <AnimatePresence>
-          {txHash && (
+          {(txHash || errorMsg) && (
             <motion.div
-              initial={{ opacity: 0, y: 15 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-6 space-y-3"
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.4, ease: EASE }}
+              role="status"
+              className={`mt-8 rounded-[24px] px-7 py-6 ${txHash ? "bg-mint text-forest-deep" : "bg-danger-soft text-danger"}`}
             >
-              <div className="flex items-center gap-2 text-emerald-800 font-bold text-sm">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-                Proposal Signed & Dispatched via Safe SDK!
-              </div>
-              <p className="text-xs text-emerald-900 leading-relaxed font-medium">
-                The transaction proposal has been signed and transmitted to the Safe Transaction Service. It is currently active in the Safe Workspace Queue for 2-of-3 signer confirmation.
-              </p>
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-4 text-xs font-mono border-t border-emerald-500/20">
-                <div className="space-y-1 truncate max-w-lg">
-                  <p className="text-emerald-950 font-bold">Safe Tx Hash: {txHash}</p>
-                  {signature && <p className="text-emerald-800 text-[0.6875rem] truncate">Signature: {signature}</p>}
+              {txHash ? (
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-2 font-semibold">
+                      <Check className="h-4 w-4" aria-hidden="true" /> Proposal signed and sent to the Safe
+                    </p>
+                    <p className="mt-1 text-[13px]">
+                      It executes after {threshold ?? "the required number of"} owner
+                      {threshold === 1 ? "" : "s"} confirm it in the Safe queue.
+                    </p>
+                    <p className="mt-2 break-all font-mono text-xs">Safe tx {txHash}</p>
+                  </div>
+                  <a href={safeQueueUrl} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm shrink-0">
+                    Confirm in Safe <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
                 </div>
-                <a
-                  href={safeQueueUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="button text-xs py-2"
-                >
-                  <span>Confirm in Safe Workspace Queue</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" />
-                </a>
-              </div>
-            </motion.div>
-          )}
-
-          {errorMsg && (
-            <motion.div
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 text-xs text-red-700 flex items-start gap-2.5"
-            >
-              <AlertTriangle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
-              <div className="space-y-0.5">
-                <p className="font-bold">Safe SDK Proposal Error:</p>
-                <p className="font-mono text-[0.75rem]">{errorMsg}</p>
-              </div>
+              ) : (
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="font-semibold">The proposal was not sent</p>
+                    <p className="mt-1 break-words font-mono text-xs">{errorMsg}</p>
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Safe Queue Table */}
-        <FadeIn direction="up" delay={0.2} className="bg-card border border-border rounded-2xl p-6 space-y-4 shadow-xs">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-4">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-ring" />
-              <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">Pending Safe Multi-Sig Proposals</h3>
-            </div>
-            <button
-              onClick={loadData}
-              disabled={loadingPending}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-ring bg-secondary border border-border rounded-full hover:bg-border transition-colors"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingPending ? "animate-spin" : ""}`} />
-              {loadingPending ? "Fetching Queue…" : "Refresh Queue"}
+        <Panel
+          title="Pending in the Safe queue"
+          description="Proposals waiting for owner confirmations."
+          className="mt-8"
+          bodyClassName="p-0"
+          delay={0.05}
+          action={
+            <button type="button" onClick={loadQueue} disabled={loadingPending} className="btn btn-soft btn-sm">
+              <RefreshCw className={`h-3.5 w-3.5 ${loadingPending ? "animate-spin" : ""}`} aria-hidden="true" />
+              {loadingPending ? "Loading…" : hasLoadedQueue ? "Reload" : "Load queue"}
             </button>
-          </div>
-
+          }
+        >
           {!hasLoadedQueue ? (
-            <div className="bg-secondary/40 border border-border rounded-xl p-6 text-center text-xs text-muted-foreground">
-              Click &quot;Refresh Queue&quot; to inspect active proposals in Safe Transaction Service.
-            </div>
+            <p className="px-6 py-10 text-center text-[13px] text-muted-foreground">
+              The queue is fetched from the Safe Transaction Service when you ask for it.
+            </p>
           ) : pendingTxs.length === 0 ? (
-            <div className="bg-secondary/40 border border-border rounded-xl p-6 text-center text-xs text-muted-foreground font-mono">
-              No pending multi-sig proposals awaiting signers in Safe Queue.
-            </div>
+            <p className="px-6 py-10 text-center text-[13px] text-muted-foreground">Nothing is waiting for signatures.</p>
           ) : (
-            <StaggerContainer className="space-y-3" staggerDelay={0.06}>
-              {pendingTxs.map((tx: SafePendingTransaction, idx: number) => (
-                <StaggerItem key={idx}>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-secondary/30 border border-border rounded-xl gap-3 text-xs">
-                    <div className="space-y-1 font-mono">
-                      <p className="font-bold text-foreground">
-                        Safe Tx Hash: {compactAddress(tx.safeTxHash || "")}
-                      </p>
-                      <p className="text-muted-foreground text-xs font-sans">
-                        Confirmations: <span className="font-bold text-ring">{tx.confirmations?.length || 0} / {safeInfo?.threshold || 2} Signers</span>
-                      </p>
+            <ul className="hairline">
+              {pendingTxs.map((tx) => {
+                const confirmed = tx.confirmations?.length ?? 0;
+                const need = threshold ?? confirmed;
+                return (
+                  <li key={tx.safeTxHash} className="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="font-mono text-[13px] font-medium">{compactAddress(tx.safeTxHash)}</p>
+                      <div className="mt-2 flex items-center gap-3">
+                        <div className="h-1.5 w-28 overflow-hidden rounded-full bg-mint">
+                          <div className="h-full rounded-full bg-forest" style={{ width: `${need > 0 ? Math.min(100, (confirmed / need) * 100) : 0}%` }} />
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          {confirmed} of {need} confirmations
+                        </span>
+                      </div>
                     </div>
-                    <a
-                      href={safeQueueUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="button text-xs py-2"
-                    >
-                      <span>Approve in Safe</span>
-                      <ArrowUpRight className="w-3.5 h-3.5" />
+                    <a href={safeQueueUrl} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
+                      Review in Safe <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </a>
-                  </div>
-                </StaggerItem>
-              ))}
-            </StaggerContainer>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-        </FadeIn>
+        </Panel>
       </div>
     </PageTransition>
-  );
-}
-
-function CheckItem({ label, checked }: { label: string; checked: boolean }) {
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <motion.span
-        initial={false}
-        animate={{ scale: checked ? [1, 1.2, 1] : 1 }}
-        className={`w-4 h-4 rounded-full flex items-center justify-center text-[0.625rem] font-bold ${
-          checked ? "bg-emerald-500/20 text-emerald-800 border border-emerald-500/40" : "bg-secondary text-muted-foreground border border-border"
-        }`}
-      >
-        {checked ? "✓" : "–"}
-      </motion.span>
-      <span className={`font-medium ${checked ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
-    </div>
   );
 }

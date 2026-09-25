@@ -49,4 +49,7 @@ library VaultErrors {
 
     /// @notice The auditor attempted to lock a vault that has not been configured yet.
     error VaultNotCreated();
+
+    /// @notice approveVault() called with no shares issued (nothing was raised).
+    error VaultEmpty();
 }

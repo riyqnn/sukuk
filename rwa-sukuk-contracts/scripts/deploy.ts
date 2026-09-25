@@ -7,7 +7,7 @@ dotenv.config();
 
 /**
  * Deployment flow:
- *   1. Deploy IDRX (mock stablecoin).
+ *   1. Use official IDRX (IDRX_ADDRESS) or deploy MockIDRX.
  *   2. Deploy SukukVault with (underlying, name, symbol, admin, auditor multisig).
  *   3. Grant PROTOCOL_ROLE to the protocol admin (defaults to deployer).
  *   4. Log all addresses and persist them to deployments/<network>.json.
@@ -26,12 +26,23 @@ async function main() {
   console.log(`Protocol admin:      ${protocolAdmin}`);
   console.log(`Auditor multisig:    ${auditorMultisig}\n`);
 
-  // 1. Deploy IDRX
-  const IDRX = await ethers.getContractFactory("IDRX");
-  const idrx = await IDRX.deploy(deployer.address);
-  await idrx.waitForDeployment();
-  const idrxAddress = await idrx.getAddress();
-  console.log(`IDRX deployed at:    ${idrxAddress}`);
+  // 1. Underlying: use the official IDRX if IDRX_ADDRESS is set, else deploy MockIDRX.
+  let idrxAddress = process.env.IDRX_ADDRESS;
+  if (idrxAddress) {
+    const token = await ethers.getContractAt("IERC20Metadata", idrxAddress);
+    const decimals = await token.decimals();
+    console.log(`Using official IDRX at ${idrxAddress} (decimals=${decimals})`);
+    // Vault shares inherit the asset's decimals; frontend + seed script assume 18.
+    if (decimals !== 18n) {
+      throw new Error(`IDRX decimals=${decimals}, expected 18. Update frontend/seed before deploying.`);
+    }
+  } else {
+    const MockIDRX = await ethers.getContractFactory("MockIDRX");
+    const mock = await MockIDRX.deploy(deployer.address);
+    await mock.waitForDeployment();
+    idrxAddress = await mock.getAddress();
+    console.log(`MockIDRX (NOT official IDRX) deployed at: ${idrxAddress}`);
+  }
 
   // 2. Deploy SukukVault
   const SukukVault = await ethers.getContractFactory("SukukVault");
@@ -69,6 +80,7 @@ async function main() {
     network: network.name,
     chainId: network.config.chainId,
     idrx: idrxAddress,
+    idrxIsMock: !process.env.IDRX_ADDRESS,
     sukukVault: vaultAddress,
     protocolAdmin,
     auditorMultisig,

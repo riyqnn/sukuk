@@ -1,35 +1,53 @@
 "use client";
 
+import { useState } from "react";
 import { useAccount } from "wagmi";
+import { AnimatePresence, motion } from "framer-motion";
+import { ExternalLink } from "lucide-react";
 import { CONTRACTS } from "@/contracts/addresses";
 import {
-  useVaultState, useVaultParameters, useVaultTotals,
-  useIDRXBalance, useSukukBalance,
-  useSukukDeposit, useSukukRedeem,
-  useApproveIDRX, useTxState,
+  useApproveIDRX,
+  useIDRXBalance,
+  useSukukBalance,
+  useSukukDeposit,
+  useSukukRedeem,
+  useTxState,
+  useVaultParameters,
+  useVaultState,
+  useVaultTotals,
 } from "@/lib/contracts";
 import { getErrorMessage } from "@/lib/safe";
+import {
+  basisPointsToPercent,
+  compactAddress,
+  formatDate,
+  formatDuration,
+  formatIDRX,
+  formatTokenAmount,
+  parseTokenAmount,
+  toDisplayNumber,
+} from "@/lib/formatters";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { KeyFigures } from "@/components/ui/KeyFigures";
+import { Panel } from "@/components/ui/Panel";
+import { Field } from "@/components/ui/Field";
+import { TxNotice } from "@/components/ui/TxNotice";
 import { StateBadge } from "@/components/ui/StateBadge";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { FundingBar, MiniBars } from "@/components/ui/Chart";
-import { formatIDRX, formatDate, formatDuration, basisPointsToPercent } from "@/lib/formatters";
-import { useState, useEffect } from "react";
-import { ArrowRight, Clock, Layers, Sparkles, TrendingUp, ShieldCheck } from "lucide-react";
-import {
-  AnimatedNumber,
-  TiltCard,
-  MagneticButton,
-  PageTransition,
-  StaggerContainer,
-  StaggerItem,
-  FadeIn,
-  PulseGlowBadge,
-} from "@/components/ui/motion";
-import { motion, AnimatePresence } from "framer-motion";
+import { WalletConnect } from "@/components/wallet/WalletConnect";
+import { AnimatedNumber, EASE, PageTransition, Press, Reveal } from "@/components/ui/motion";
+
+const STATES = [
+  { title: "Open", desc: "Deposits accepted until the quota is full." },
+  { title: "Locked", desc: "The auditor Safe locked the round. Nothing moves." },
+  { title: "Matured", desc: "The payout is funded. Waiting on the auditor Safe." },
+  { title: "Approved for payout", desc: "Redemption is open for every holder." },
+  { title: "Closed", desc: "Settled. Redemption stays open for remaining holders." },
+];
 
 export default function SukukPage() {
   const { address, isConnected } = useAccount();
-  const { data: state } = useVaultState();
+  const { data: state, isLoading: stateLoading } = useVaultState();
   const params = useVaultParameters();
   const totals = useVaultTotals();
   const { data: idrxBal } = useIDRXBalance(address);
@@ -45,417 +63,299 @@ export default function SukukPage() {
 
   const s = Number(state ?? 0);
   const isOpen = s === 0;
-  const canRedeem = s === 3;
+  const canRedeem = s === 3 || s === 4;
 
-  const maxQuota = Number((params.maxQuota.data ?? 0n) as bigint) / 1e18;
-  const totalAssets = Number((totals.totalAssets.data ?? 0n) as bigint) / 1e18;
-  const totalSupply = Number((totals.totalSupply.data ?? 0n) as bigint) / 1e18;
-  const filledPct = maxQuota > 0 ? ((totalAssets / maxQuota) * 100) : 0;
-
-  const lockStart = Number((params.lockStartTime.data ?? 0n) as bigint);
-  const dur = Number((params.duration.data ?? 0n) as bigint);
-  const unlockDate = lockStart > 0 ? formatDate(lockStart + dur) : "—";
-
+  const maxQuota = toDisplayNumber(params.maxQuota.data);
+  const totalAssets = toDisplayNumber(totals.totalAssets.data);
+  const totalSupply = toDisplayNumber(totals.totalSupply.data);
+  const filledPct = maxQuota > 0 ? Math.min(100, (totalAssets / maxQuota) * 100) : 0;
+  const lockStart = Number(params.lockStartTime.data ?? 0n);
+  const dur = Number(params.duration.data ?? 0n);
   const exchangeRate = totalSupply > 0 ? totalAssets / totalSupply : 1;
-  const position = sukukBal ? Number(sukukBal) / 1e18 : 0;
-  const positionValue = position * exchangeRate;
+  const position = sukukBal ? toDisplayNumber(sukukBal) : 0;
 
-  useEffect(() => { if (depositTx.status === "confirmed") setAmount(""); }, [depositTx.status]);
+  const tx = tab === "deposit" ? depositTx : redeemTx;
+  const busy = tx.status === "approving" || tx.status === "awaiting_signature" || tx.status === "pending";
+  const parsed = parseTokenAmount(amount);
 
-  async function handleDepositSubmit(e: React.FormEvent) {
+  async function handleDeposit(e: React.FormEvent) {
     e.preventDefault();
-    const assets = BigInt(Math.floor(parseFloat(amount || "0") * 1e18));
-    if (assets <= 0n || !address) return;
+    if (parsed <= 0n || !address) return;
     try {
-      depositTx.setStatus("approving");
       depositTx.setError("");
-      await approve(CONTRACTS.sukukVault, assets);
+      depositTx.setHash("");
+      depositTx.setStatus("approving");
+      await approve(CONTRACTS.sukukVault, parsed);
       depositTx.setStatus("awaiting_signature");
-      const txHash = await deposit(assets, address);
-      depositTx.setHash(txHash);
+      const hash = await deposit(parsed, address);
+      depositTx.setHash(hash);
       depositTx.setStatus("confirmed");
-    } catch (e: unknown) {
+      setAmount("");
+    } catch (err: unknown) {
       depositTx.setStatus("failed");
-      depositTx.setError(getErrorMessage(e));
+      depositTx.setError(getErrorMessage(err));
     }
   }
 
-  async function handleRedeemSubmit(e: React.FormEvent) {
+  async function handleRedeem(e: React.FormEvent) {
     e.preventDefault();
-    const shares = BigInt(Math.floor(parseFloat(amount || "0") * 1e18));
-    if (shares <= 0n || !address) return;
+    if (parsed <= 0n || !address) return;
     try {
-      redeemTx.setStatus("awaiting_signature");
       redeemTx.setError("");
-      const txHash = await redeem(shares, address, address);
-      redeemTx.setHash(txHash);
+      redeemTx.setHash("");
+      redeemTx.setStatus("awaiting_signature");
+      const hash = await redeem(parsed, address, address);
+      redeemTx.setHash(hash);
       redeemTx.setStatus("confirmed");
-    } catch (e: unknown) {
+      setAmount("");
+    } catch (err: unknown) {
       redeemTx.setStatus("failed");
-      redeemTx.setError(getErrorMessage(e));
+      redeemTx.setError(getErrorMessage(err));
     }
   }
 
   return (
     <PageTransition>
-      <div className="container pb-24 pt-8">
-        {/* Digital Asset Terminal Top Header */}
-        <FadeIn direction="down" className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-border gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-secondary border border-border flex items-center justify-center text-foreground font-mono font-bold text-xs shadow-inner">
-              SKK
+      <div className="container pb-24">
+        <PageHeader
+          kicker="Vault terminal"
+          title="Sepolia Sukuk Vault"
+          description="Deposit IDRX while the round is open. Redeem principal plus the funded payout once the auditor Safe approves it."
+          aside={
+            <div className="flex flex-wrap items-center gap-3">
+              {stateLoading ? <Skeleton className="h-6 w-24" /> : <StateBadge state={s} />}
+              <a
+                href={`https://sepolia.etherscan.io/address/${CONTRACTS.sukukVault}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 font-mono text-[13px] text-muted-foreground hover:text-forest"
+              >
+                {compactAddress(CONTRACTS.sukukVault)} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </a>
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold tracking-tight text-foreground">Sepolia Sukuk Vault #1</h1>
-                {state !== undefined ? <StateBadge state={s} /> : <Skeleton className="h-5 w-20" />}
-              </div>
-              <p className="text-xs text-muted-foreground font-mono mt-0.5">
-                CONTRACT: {CONTRACTS.sukukVault}
-              </p>
-            </div>
-          </div>
+          }
+        />
 
-          <div className="flex items-center gap-3">
-            <PulseGlowBadge text="ERC-4626 COMPLIANT" color="emerald" />
-          </div>
-        </FadeIn>
+        <Reveal delay={0.05}>
+          <KeyFigures
+            figures={[
+              {
+                label: "Subscribed",
+                lead: true,
+                loading: totals.totalAssets.isLoading,
+                value: <AnimatedNumber value={totalAssets} suffix=" IDRX" />,
+                note: maxQuota > 0 ? `of ${formatIDRX(maxQuota)} IDRX quota` : "No round configured",
+              },
+              {
+                label: "Share price",
+                value: `${exchangeRate.toFixed(4)}`,
+                note: "IDRX per sSUKUK. Rises when the payout lands.",
+              },
+              {
+                label: "Target yield",
+                value: params.apy.data !== undefined ? basisPointsToPercent(Number(params.apy.data)) : "Not set",
+                note: `Lock period ${formatDuration(dur)}`,
+              },
+              {
+                label: "Maturity",
+                value: lockStart > 0 ? formatDate(lockStart + dur) : "Not locked",
+                note: lockStart > 0 ? "When the payout can be funded" : "Starts when the auditor Safe locks",
+              },
+            ]}
+          />
+        </Reveal>
 
-        {/* Metric Cards Grid */}
-        <StaggerContainer className="grid grid-cols-2 lg:grid-cols-4 gap-5 my-8" staggerDelay={0.07}>
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">
-                  Total Assets Deposited
-                </span>
-                <div className="text-2xl font-bold tracking-tight text-foreground font-mono">
-                  {totals.totalAssets.isLoading ? (
-                    <Skeleton className="h-7 w-28" />
-                  ) : (
-                    <AnimatedNumber value={totalAssets} suffix=" IDRX" decimals={0} />
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Underlying IDRX balance held in vault
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">
-                  Subscription Capacity
-                </span>
-                <div className="text-2xl font-bold tracking-tight text-foreground font-mono">
-                  {maxQuota > 0 ? (
-                    <AnimatedNumber value={filledPct} suffix="%" decimals={1} />
-                  ) : (
-                    "—"
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Target Quota: {formatIDRX(maxQuota)} IDRX
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">
-                  Maturity Unlock
-                </span>
-                <div className="text-xl font-bold tracking-tight text-foreground font-mono truncate">
-                  {lockStart > 0 ? unlockDate : "Not Locked"}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {lockStart > 0 ? `${formatDuration(dur)} Lock Period` : "Pending Lock Audit"}
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-
-          <StaggerItem>
-            <TiltCard maxTilt={5}>
-              <div className="bg-card border border-border rounded-xl p-5 space-y-2 shadow-2xs">
-                <span className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-semibold">
-                  Protocol Yield Rate
-                </span>
-                <div className="text-2xl font-bold tracking-tight text-ring font-mono">
-                  {params.apy.data !== undefined ? basisPointsToPercent(Number(params.apy.data)) : "—"}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Exchange parity: 1 sSUKUK = {exchangeRate.toFixed(4)} IDRX
-                </p>
-              </div>
-            </TiltCard>
-          </StaggerItem>
-        </StaggerContainer>
-
-        {/* Main Terminal Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-          {/* Left Column: Progress + Breakdown + Lifecycle Timeline */}
-          <div className="lg:col-span-7 space-y-8">
-            {/* Funding Progress Visualizer */}
-            <FadeIn direction="up" delay={0.1} className="bg-card border border-border rounded-xl p-6 space-y-4 shadow-2xs">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-ring" />
-                  Subscription Progress
-                </h2>
-                <span className="text-xs font-mono font-semibold text-muted-foreground">
-                  {formatIDRX(totalAssets)} / {formatIDRX(maxQuota)} IDRX
-                </span>
-              </div>
-
+        <div className="mt-8 grid gap-8 lg:grid-cols-12">
+          <div className="space-y-8 lg:col-span-7">
+            <Panel title="Subscription" description="IDRX deposited against the round's quota." delay={0.05}>
               {maxQuota > 0 ? (
-                <FundingBar filled={totalAssets} total={maxQuota} />
+                <>
+                  <div className="flex items-end justify-between gap-4">
+                    <p className="figure text-4xl font-medium leading-none">{filledPct.toFixed(1)}%</p>
+                    <p className="text-right text-[13px] text-muted-foreground">
+                      <span className="figure text-ink">{formatIDRX(totalAssets)}</span> / {formatIDRX(maxQuota)} IDRX
+                    </p>
+                  </div>
+                  <div
+                    className="mt-5 h-3 overflow-hidden rounded-full bg-mint"
+                    role="progressbar"
+                    aria-label="Quota filled"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(filledPct)}
+                  >
+                    <motion.div
+                      className="h-full rounded-full bg-forest"
+                      initial={{ width: 0 }}
+                      whileInView={{ width: `${filledPct}%` }}
+                      viewport={{ once: true }}
+                      transition={{ duration: 1.4, ease: EASE }}
+                    />
+                  </div>
+                  <dl className="mt-6 grid grid-cols-2 gap-4 text-[13px]">
+                    <div className="rounded-xl bg-mist px-4 py-3">
+                      <dt className="text-muted-foreground">Shares issued</dt>
+                      <dd className="figure mt-1 text-base text-ink">{formatIDRX(totalSupply)} sSUKUK</dd>
+                    </div>
+                    <div className="rounded-xl bg-mist px-4 py-3">
+                      <dt className="text-muted-foreground">Quota remaining</dt>
+                      <dd className="figure mt-1 text-base text-ink">{formatIDRX(Math.max(0, maxQuota - totalAssets))} IDRX</dd>
+                    </div>
+                  </dl>
+                </>
               ) : (
-                <p className="text-xs text-muted-foreground bg-secondary p-4 rounded-lg border">
-                  Vault has not yet been configured by protocol admin.
+                <p className="rounded-xl bg-mist px-4 py-4 text-sm text-muted-foreground">
+                  The protocol has not configured a round yet. The quota and progress appear here once it calls createVault().
                 </p>
               )}
-            </FadeIn>
+            </Panel>
 
-            {/* Asset Composition breakdown */}
-            {totalAssets > 0 && (
-              <FadeIn direction="up" delay={0.15} className="bg-card border border-border rounded-xl p-6 space-y-4 shadow-2xs">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-ring" />
-                  Asset Composition Breakdown
-                </h2>
-                <MiniBars
-                  items={[
-                    { label: "IDRX Vault Capital", value: totalAssets, max: totalAssets },
-                    { label: "sSUKUK Token Shares Minted", value: totalSupply, max: totalAssets },
-                  ]}
-                />
-              </FadeIn>
-            )}
-
-            {/* Lifecycle Sequence */}
-            <FadeIn direction="up" delay={0.2} className="bg-card border border-border rounded-xl p-6 space-y-5 shadow-2xs">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
-                <Clock className="w-4 h-4 text-ring" />
-                Vault Lifecycle Status
-              </h2>
-
-              <StaggerContainer className="space-y-3 font-mono text-xs" staggerDelay={0.05}>
-                <StaggerItem>
-                  <LifecycleStep number="01" title="Vault Created" desc="Admin initialized vault parameters and quota." done={s >= 0} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="02" title="Public Subscription" desc="Investors deposit IDRX stablecoins for sSUKUK shares." done={s >= 0} active={s === 0} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="03" title="Protocol Fill" desc="Admin fills remaining quota if applicable." done={s >= 1} active={s === 1} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="04" title="Audit 1 Lock (Safe Multisig)" desc="Safe Auditor verifies RWA backing & locks funds." done={s >= 2} active={s === 2} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="05" title="Yield Accrual & Maturity" desc="Underlying Sukuk asset generates yield over lock duration." done={s >= 3} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="06" title="Audit 2 Payout (Safe Multisig)" desc="Auditor approves payout injection & redemption unlock." done={s >= 3} active={s === 3} />
-                </StaggerItem>
-                <StaggerItem>
-                  <LifecycleStep number="07" title="Share Redemption & Close" desc="Token holders redeem sSUKUK for IDRX principal + yield." done={s === 4} />
-                </StaggerItem>
-              </StaggerContainer>
-            </FadeIn>
+            <Panel title="Lifecycle" description="Where this round is, read from the contract." delay={0.1} bodyClassName="p-3">
+              <ol>
+                {STATES.map((st, i) => {
+                  const active = i === s;
+                  const done = i < s;
+                  return (
+                    <li
+                      key={st.title}
+                      className={`flex items-start gap-4 rounded-2xl px-4 py-4 transition-colors ${active ? "bg-mint" : ""}`}
+                    >
+                      <span
+                        className={`figure mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs ${
+                          active ? "bg-forest text-white" : done ? "bg-mint-2 text-forest-deep" : "border border-line-strong text-muted-foreground"
+                        }`}
+                      >
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className={`text-[15px] font-semibold ${active || done ? "text-ink" : "text-muted-foreground"}`}>
+                          {st.title}
+                          {active && <span className="ml-2 align-middle text-xs font-medium text-forest">Current</span>}
+                        </p>
+                        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{st.desc}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </Panel>
           </div>
 
-          {/* Right Column: Interactive Terminal Form */}
           <aside className="lg:col-span-5">
-            <TiltCard maxTilt={4} className="sticky top-20">
-              <div className="bg-card border border-border rounded-xl p-6 space-y-6 shadow-md">
-                {/* Tab Selector with Framer Motion Sliding Pill */}
-                <div className="relative flex rounded-full bg-secondary p-1 border border-border">
-                  <button
-                    type="button"
-                    onClick={() => { setTab("deposit"); setAmount(""); }}
-                    className={`relative z-10 flex-1 py-2 text-xs font-semibold rounded-full transition-colors duration-200 ${
-                      tab === "deposit" ? "text-primary-foreground font-bold" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Deposit IDRX
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setTab("redeem"); setAmount(""); }}
-                    className={`relative z-10 flex-1 py-2 text-xs font-semibold rounded-full transition-colors duration-200 ${
-                      tab === "redeem" ? "text-primary-foreground font-bold" : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Redeem Shares
-                  </button>
-
-                  <motion.div
-                    layoutId="activeTerminalTab"
-                    className="absolute inset-y-1 bg-primary rounded-full"
-                    style={{
-                      left: tab === "deposit" ? "4px" : "50%",
-                      width: "calc(50% - 4px)",
-                    }}
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  />
+            <Reveal delay={0.1} className="panel sticky top-24 overflow-hidden">
+              <div className="p-2">
+                <div className="relative grid grid-cols-2 rounded-full bg-mist p-1" role="tablist" aria-label="Action">
+                  {(["deposit", "redeem"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === t}
+                      onClick={() => {
+                        setTab(t);
+                        setAmount("");
+                      }}
+                      className={`relative z-10 min-h-10 rounded-full text-sm font-semibold transition-colors ${
+                        tab === t ? "text-forest-deep" : "text-muted-foreground hover:text-ink"
+                      }`}
+                    >
+                      {tab === t && (
+                        <motion.span
+                          layoutId="terminal-tab"
+                          className="absolute inset-0 -z-10 rounded-full bg-white shadow-[0_1px_3px_#0c1f1714]"
+                          transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                        />
+                      )}
+                      {t === "deposit" ? "Deposit" : "Redeem"}
+                    </button>
+                  ))}
                 </div>
+              </div>
 
-                {/* Form / State logic */}
+              <div className="px-6 pb-6 pt-4">
                 <AnimatePresence mode="wait">
                   {!isConnected ? (
-                    <motion.div
-                      key="not-connected"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="bg-secondary/70 border border-border rounded-xl p-6 text-center space-y-3"
-                    >
-                      <Sparkles className="w-6 h-6 mx-auto text-ring" />
-                      <p className="text-xs font-medium text-muted-foreground">
-                        Connect your wallet to execute Web3 vault transactions on Sepolia.
+                    <motion.div key="connect" {...fade} className="rounded-2xl bg-mist px-5 py-8 text-center">
+                      <p className="title text-lg">Connect a wallet</p>
+                      <p className="mx-auto mt-2 max-w-[32ch] text-[13px] leading-relaxed text-muted-foreground">
+                        Use a wallet on Sepolia to deposit IDRX or redeem sSUKUK.
                       </p>
+                      <div className="mt-5 flex justify-center">
+                        <WalletConnect />
+                      </div>
                     </motion.div>
                   ) : tab === "deposit" && !isOpen ? (
-                    <motion.div
-                      key="deposit-locked"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-xs text-amber-900 space-y-1"
-                    >
-                      <p className="font-semibold">Vault is currently not in OPEN state.</p>
-                      <p className="text-muted-foreground">Deposits are restricted during lock and audit phases.</p>
+                    <motion.div key="deposit-closed" {...fade} className="rounded-2xl bg-amber-soft px-5 py-5 text-[13px] text-amber">
+                      <p className="font-semibold">Deposits are closed</p>
+                      <p className="mt-1 leading-relaxed">The round is {STATES[s]?.title.toLowerCase()}. Deposits are only accepted while it is open.</p>
                     </motion.div>
                   ) : tab === "redeem" && !canRedeem ? (
-                    <motion.div
-                      key="redeem-locked"
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-xs text-amber-900 space-y-1"
-                    >
-                      <p className="font-semibold">Redemptions are currently locked.</p>
-                      <p className="text-muted-foreground">Shares can be redeemed after Audit 2 (Payout Approval) by Safe Multisig.</p>
+                    <motion.div key="redeem-closed" {...fade} className="rounded-2xl bg-amber-soft px-5 py-5 text-[13px] text-amber">
+                      <p className="font-semibold">Redemption is not open yet</p>
+                      <p className="mt-1 leading-relaxed">It opens after the auditor Safe calls approvePayout().</p>
                     </motion.div>
                   ) : (
                     <motion.form
                       key={tab}
-                      initial={{ opacity: 0, x: tab === "deposit" ? -15 : 15 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: tab === "deposit" ? 15 : -15 }}
-                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                      onSubmit={tab === "deposit" ? handleDepositSubmit : handleRedeemSubmit}
+                      {...fade}
+                      onSubmit={tab === "deposit" ? handleDeposit : handleRedeem}
                       className="space-y-5"
                     >
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <label htmlFor="amount-input" className="block text-xs uppercase tracking-wider font-bold text-foreground">
-                            {tab === "deposit" ? "Deposit Amount (IDRX)" : "Redeem Shares (sSUKUK)"}
-                          </label>
-                          <span className="text-xs font-mono font-medium text-muted-foreground">
+                      <Field
+                        id="amount"
+                        label={tab === "deposit" ? "Amount to deposit" : "Shares to redeem"}
+                        unit={tab === "deposit" ? "IDRX" : "sSUKUK"}
+                        value={amount}
+                        onChange={setAmount}
+                        hint={
+                          tab === "deposit"
+                            ? `Wallet ${formatIDRX(idrxBal ?? 0n)} IDRX`
+                            : `Held ${formatIDRX(sukukBal ?? 0n)} sSUKUK`
+                        }
+                        onFill={() => setAmount(formatTokenAmount(tab === "deposit" ? idrxBal : sukukBal))}
+                      />
+
+                      {parsed > 0n && (
+                        <p className="rounded-xl bg-mist px-4 py-3 text-[13px] text-muted-foreground">
+                          You receive about{" "}
+                          <span className="figure font-medium text-ink">
                             {tab === "deposit"
-                              ? `Bal: ${formatIDRX((idrxBal ?? 0n) as bigint)} IDRX`
-                              : `Bal: ${formatIDRX((sukukBal ?? 0n) as bigint)} sSUKUK`}
+                              ? `${formatIDRX(toDisplayNumber(parsed) / exchangeRate)} sSUKUK`
+                              : `${formatIDRX(toDisplayNumber(parsed) * exchangeRate)} IDRX`}
                           </span>
-                        </div>
+                          {tab === "deposit" && " after two wallet prompts: approve, then deposit."}
+                        </p>
+                      )}
 
-                        <div className="relative">
-                          <input
-                            id="amount-input"
-                            type="number"
-                            value={amount}
-                            onChange={(e) => setAmount(e.target.value)}
-                            placeholder="0.00"
-                            step="0.01"
-                            min="0"
-                            required
-                            className="w-full px-4 py-3.5 text-2xl font-mono font-bold bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-ring transition-all placeholder:text-muted-foreground/30"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (tab === "deposit" && idrxBal) {
-                                setAmount((Number(idrxBal) / 1e18).toString());
-                              } else if (tab === "redeem" && sukukBal) {
-                                setAmount((Number(sukukBal) / 1e18).toString());
-                              }
-                            }}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-[0.625rem] font-mono font-bold uppercase px-2 py-1 bg-secondary border border-border rounded hover:bg-border transition-colors"
-                          >
-                            MAX
-                          </button>
-                        </div>
-                      </div>
-
-                      <MagneticButton className="w-full">
-                        <button
-                          type="submit"
-                          disabled={!amount || parseFloat(amount) <= 0 || depositTx.status === "awaiting_signature" || depositTx.status === "approving" || redeemTx.status === "awaiting_signature"}
-                          className="w-full button justify-center py-3.5 shadow-md text-xs font-bold disabled:opacity-40"
-                        >
-                          {tab === "deposit" ? (
-                            depositTx.status === "idle" ? "Deposit IDRX Stablecoin" :
-                            depositTx.status === "approving" ? "1/2 Approving IDRX Allowance…" :
-                            depositTx.status === "awaiting_signature" ? "2/2 Sign Deposit in Wallet…" :
-                            depositTx.status === "confirmed" ? "Deposit Complete!" : "Retry Deposit"
-                          ) : (
-                            redeemTx.status === "idle" ? "Redeem sSUKUK Shares" :
-                            redeemTx.status === "awaiting_signature" ? "Sign Redeem in Wallet…" :
-                            redeemTx.status === "confirmed" ? "Redemption Complete!" : "Retry Redeem"
-                          )}
+                      <Press className="w-full">
+                        <button type="submit" disabled={parsed <= 0n || busy} className="btn btn-primary w-full">
+                          {busy
+                            ? "Waiting for wallet…"
+                            : tab === "deposit"
+                              ? "Deposit IDRX"
+                              : "Redeem sSUKUK"}
                         </button>
-                      </MagneticButton>
+                      </Press>
 
-                      {(depositTx.status === "failed" || redeemTx.status === "failed") && (
-                        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-xs text-red-700">
-                          {(tab === "deposit" ? depositTx.error : redeemTx.error) || "Transaction failed."}
-                        </div>
-                      )}
-
-                      {(depositTx.hash || redeemTx.hash) && (
-                        <a
-                          href={`https://sepolia.etherscan.io/tx/${depositTx.hash || redeemTx.hash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="block text-center text-xs font-mono text-ring hover:underline truncate"
-                        >
-                          View Tx on Sepolia Explorer &rarr;
-                        </a>
-                      )}
+                      <TxNotice status={tx.status} hash={tx.hash} error={tx.error} />
                     </motion.form>
                   )}
                 </AnimatePresence>
-
-                {/* Connected Account Position Summary */}
-                {isConnected && sukukBal !== undefined && (sukukBal as bigint) > 0n && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    className="border-t border-border pt-4 space-y-3"
-                  >
-                    <p className="text-[0.6875rem] text-muted-foreground uppercase tracking-wider font-bold">
-                      Your Investment Position
-                    </p>
-                    <div className="space-y-2 font-mono text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">sSUKUK Shares</span>
-                        <span className="font-bold text-foreground">{formatIDRX(sukukBal as bigint)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Current Underlying Value</span>
-                        <span className="font-bold text-foreground">{formatIDRX(positionValue)} IDRX</span>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
               </div>
-            </TiltCard>
+
+              {isConnected && position > 0 && (
+                <dl className="grid grid-cols-2 border-t border-line bg-mist text-[13px]">
+                  <div className="px-6 py-4">
+                    <dt className="text-muted-foreground">Your shares</dt>
+                    <dd className="figure mt-1 text-base text-ink">{formatIDRX(position)}</dd>
+                  </div>
+                  <div className="border-l border-line px-6 py-4">
+                    <dt className="text-muted-foreground">Worth now</dt>
+                    <dd className="figure mt-1 text-base text-ink">{formatIDRX(position * exchangeRate)} IDRX</dd>
+                  </div>
+                </dl>
+              )}
+            </Reveal>
           </aside>
         </div>
       </div>
@@ -463,43 +363,9 @@ export default function SukukPage() {
   );
 }
 
-/* ── Helper Component ────────────────────────────────────────────── */
-
-function LifecycleStep({
-  number,
-  title,
-  desc,
-  done,
-  active,
-}: {
-  number: string;
-  title: string;
-  desc: string;
-  done?: boolean;
-  active?: boolean;
-}) {
-  return (
-    <motion.div
-      whileHover={{ x: 4 }}
-      transition={{ duration: 0.2 }}
-      className={`flex items-start gap-4 p-3 rounded-lg border transition-all ${
-        active
-          ? "bg-secondary border-ring/50 shadow-2xs"
-          : done
-          ? "bg-card border-border opacity-90"
-          : "bg-transparent border-transparent opacity-50"
-      }`}
-    >
-      <span className={`px-2 py-0.5 rounded text-[0.625rem] font-bold ${active ? "bg-ring text-white" : "bg-border text-foreground"}`}>
-        {number}
-      </span>
-      <div className="flex-1 space-y-0.5">
-        <div className="flex items-center gap-2 font-sans font-bold text-foreground text-xs">
-          <span>{title}</span>
-          {active && <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />}
-        </div>
-        <p className="font-sans text-[0.75rem] text-muted-foreground">{desc}</p>
-      </div>
-    </motion.div>
-  );
-}
+const fade = {
+  initial: { opacity: 0, y: 10 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -8 },
+  transition: { duration: 0.3, ease: EASE },
+};

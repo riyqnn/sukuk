@@ -8,7 +8,7 @@ stablecoin (`IDRX`) as the underlying asset, and an ERC-4626 yield-bearing vault
 
 | File | Purpose |
 |---|---|
-| `contracts/IDRX.sol` | Mock fiat-backed stablecoin (18dp), owner-only `mint()` for testnet faucet. |
+| `contracts/MockIDRX.sol` | DEV/TESTNET ONLY mock (not official IDRX), 18dp, owner-only `mint()`. Set `IDRX_ADDRESS` to use the official token. |
 | `contracts/SukukVault.sol` | ERC-4626 vault with `AccessControl`, `Pausable`, `ReentrancyGuard` and a linear state machine. |
 | `contracts/interfaces/ISukukVault.sol` | Public interface. |
 | `contracts/libraries/VaultErrors.sol` | Custom errors + `VaultState` enum. |
