@@ -8,9 +8,18 @@ const STATES = ["Open", "Locked", "Matured", "Approved", "Closed"];
 // Lifecycle nodes sit on the upper arc, read left to right like a timeline.
 const NODE_ANGLES = [-160, -125, -90, -55, -20];
 
+/**
+ * Math.cos and Math.sin are implementation-defined in the last bits, so Node and the browser can
+ * disagree there and React then reports a hydration mismatch. Rounding to three decimals is far
+ * coarser than that difference and far finer than a pixel.
+ */
+function round(v: number) {
+  return Math.round(v * 1000) / 1000;
+}
+
 function polar(r: number, deg: number) {
   const a = (deg * Math.PI) / 180;
-  return { x: C + r * Math.cos(a), y: C + r * Math.sin(a) };
+  return { x: round(C + r * Math.cos(a)), y: round(C + r * Math.sin(a)) };
 }
 
 /**
