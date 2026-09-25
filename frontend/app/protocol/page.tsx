@@ -11,16 +11,23 @@ import { Panel } from "@/components/ui/Panel";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EASE, PageTransition, Press, Reveal, Stagger, StaggerItem } from "@/components/ui/motion";
 
-const LANES = ["Protocol", "Investors", "Auditor Safe"] as const;
 
-const CALLS: { n: number; lane: (typeof LANES)[number]; call: string; effect: string; to?: string }[] = [
-  { n: 1, lane: "Protocol", call: "createVault()", effect: "Sets quota, lock period and target yield", to: "Open" },
-  { n: 2, lane: "Investors", call: "deposit()", effect: "IDRX in, sSUKUK shares minted" },
-  { n: 3, lane: "Protocol", call: "protocolFill()", effect: "Optional top-up of the remaining quota" },
-  { n: 4, lane: "Auditor Safe", call: "approveVault()", effect: "Closes subscription, starts the lock", to: "Locked" },
-  { n: 5, lane: "Protocol", call: "sendPayout()", effect: "Pays the return in after the lock ends", to: "Matured" },
-  { n: 6, lane: "Auditor Safe", call: "approvePayout()", effect: "Opens redemption", to: "Approved" },
-  { n: 7, lane: "Investors", call: "redeem()", effect: "Shares burned, IDRX paid out" },
+type Lane = "Agent" | "Protocol" | "Investors" | "Auditor Safe";
+
+const CALLS: { n: number; lane: Lane; call: string; effect: string; to?: string; std: string }[] = [
+  { n: 1, lane: "Agent", call: "registerIdentity()", effect: "Records the KYC result for a wallet", std: "ERC-3643" },
+  { n: 2, lane: "Protocol", call: "openIssue()", effect: "Quota, denomination, tenor, profit rate", std: "ERC-7092" },
+  { n: 3, lane: "Investors", call: "deposit()", effect: "IDRX in, certificates minted 1:1", std: "ERC-4626" },
+  { n: 4, lane: "Auditor Safe", call: "closeSubscription()", effect: "Ends the offer, starts the tenor", to: "Active", std: "Safe" },
+  { n: 5, lane: "Protocol", call: "allocateToTreasury()", effect: "Principal out to the project", std: "Safe" },
+  { n: 6, lane: "Protocol", call: "fundCoupon()", effect: "Pays one profit period in", std: "ERC-4626" },
+  { n: 7, lane: "Investors", call: "claimCoupon()", effect: "Pulls the holder's profit share", std: "ERC-4626" },
+  { n: 8, lane: "Protocol", call: "returnFromTreasury()", effect: "Project repays the principal", std: "Safe" },
+  { n: 9, lane: "Protocol", call: "markMatured()", effect: "Tenor over, principal fully back", to: "Matured", std: "ERC-7092" },
+  { n: 10, lane: "Auditor Safe", call: "openRedemption()", effect: "Lets holders request their money", to: "Redeeming", std: "Safe" },
+  { n: 11, lane: "Investors", call: "requestRedeem()", effect: "Certificates leave, request opens", std: "ERC-7540" },
+  { n: 12, lane: "Protocol", call: "fulfillRedeem()", effect: "Settles the open requests", std: "ERC-7540" },
+  { n: 13, lane: "Investors", call: "redeem()", effect: "Claims the principal in IDRX", std: "ERC-7540" },
 ];
 
 export default function ProtocolPage() {
@@ -31,8 +38,8 @@ export default function ProtocolPage() {
       <div className="container pb-24">
         <PageHeader
           kicker="Protocol"
-          title="How SukukVault is wired"
-          description="Seven calls take a round from creation to redemption. Each one is gated to a single role, enforced by the contract."
+          title="How the certificate is wired"
+          description="Thirteen calls take an issue from the KYC gate to redemption. Each one is gated to a single role, enforced by the contract."
           actions={
             <Press>
               <Link href="/auditor" className="btn btn-ghost">
@@ -45,57 +52,42 @@ export default function ProtocolPage() {
           }
         />
 
-        {/* Swimlane: one row per role, one column per call, read left to right. */}
-        <Panel title="The seven calls, by role" description="Calls that change the vault state are marked with the state they lead to." bodyClassName="p-0">
-          <div className="hidden lg:block">
-            <div className="grid grid-cols-[150px_repeat(7,1fr)] border-b border-line bg-mist text-xs text-muted-foreground">
-              <div className="px-5 py-3">Role</div>
-              {CALLS.map((c) => (
-                <div key={c.n} className="figure border-l border-line px-3 py-3 text-center">
-                  {String(c.n).padStart(2, "0")}
-                </div>
-              ))}
-            </div>
-            {LANES.map((lane, li) => (
-              <div key={lane} className={`grid grid-cols-[150px_repeat(7,1fr)] ${li > 0 ? "border-t border-line" : ""}`}>
-                <div className="flex items-center px-5 py-6 text-[13px] font-semibold">{lane}</div>
-                {CALLS.map((c) => (
-                  <div key={c.n} className="relative border-l border-line px-2 py-4">
-                    {c.lane === lane && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 12 }}
-                        whileInView={{ opacity: 1, y: 0 }}
-                        viewport={{ once: true }}
-                        transition={{ duration: 0.6, delay: c.n * 0.07, ease: EASE }}
-                        className="h-full rounded-xl bg-mint px-3 py-3"
-                      >
-                        <code className="block font-mono text-[12px] font-medium text-forest-deep">{c.call}</code>
-                        <p className="mt-1.5 text-[12px] leading-snug text-forest-deep/80">{c.effect}</p>
-                        {c.to && <span className="chip mt-2 h-6 bg-white px-2 text-[11px] text-forest-deep">to {c.to}</span>}
-                      </motion.div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ))}
+        {/* One row per call, in the order they happen. Role and standard are the columns that matter. */}
+        <Panel
+          title="Every call, in order"
+          description="Calls that move the issue to a new phase are marked with the phase they lead to."
+          bodyClassName="p-0"
+        >
+          <div className="hidden grid-cols-[3rem_1fr_9rem_7rem] gap-4 border-b border-line bg-mist px-6 py-3 text-xs text-muted-foreground sm:grid">
+            <span>#</span>
+            <span>Call and effect</span>
+            <span>Caller</span>
+            <span>Standard</span>
           </div>
-
-          <ol className="hairline lg:hidden">
-            {CALLS.map((c) => (
-              <li key={c.n} className="flex gap-4 px-6 py-5">
-                <span className="figure mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-mint text-xs text-forest-deep">
-                  {c.n}
-                </span>
+          <ol className="hairline">
+            {CALLS.map((c, i) => (
+              <motion.li
+                key={c.n}
+                initial={{ opacity: 0, y: 10 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-40px" }}
+                transition={{ duration: 0.5, delay: Math.min(i, 8) * 0.04, ease: EASE }}
+                className="grid grid-cols-[2.25rem_1fr] items-start gap-4 px-6 py-4 transition-colors hover:bg-mist sm:grid-cols-[3rem_1fr_9rem_7rem] sm:items-center"
+              >
+                <span className="figure text-[13px] text-muted-foreground">{String(c.n).padStart(2, "0")}</span>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <code className="font-mono text-[13px] font-medium">{c.call}</code>
-                    {c.to && <span className="chip h-6 bg-mint text-[11px] text-forest-deep">to {c.to}</span>}
+                    <code className="font-mono text-[13px] font-medium text-forest">{c.call}</code>
+                    {c.to && <span className="chip bg-mint text-[11px] text-forest-deep">to {c.to}</span>}
                   </div>
-                  <p className="mt-1 text-[13px] text-muted-foreground">
-                    {c.lane} · {c.effect}
+                  <p className="mt-1 text-[13px] leading-snug text-muted-foreground">{c.effect}</p>
+                  <p className="mt-1 text-xs text-muted-foreground sm:hidden">
+                    {c.lane} · {c.std}
                   </p>
                 </div>
-              </li>
+                <span className="hidden text-[13px] font-medium sm:block">{c.lane}</span>
+                <span className="hidden text-[13px] text-muted-foreground sm:block">{c.std}</span>
+              </motion.li>
             ))}
           </ol>
         </Panel>
@@ -106,8 +98,8 @@ export default function ProtocolPage() {
               <p className="label">PROTOCOL_ROLE</p>
               <h2 className="title mt-2 text-2xl">Protocol admin</h2>
               <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-                Creates the round, tops up the quota, funds the payout, closes the round, and can pause
-                deposits and redemptions. It cannot lock funds or release the payout.
+                Opens the issue, moves principal to and from the project, funds each profit period,
+                settles redemptions and can pause. It cannot close the offer or open redemption.
               </p>
               <dl className="mt-6 space-y-3 text-[13px]">
                 <Row label={ADDRESSES.protocolAdmins.length > 1 ? "Holders" : "Holder"}>
@@ -118,7 +110,7 @@ export default function ProtocolPage() {
                   </span>
                 </Row>
                 <Row label="Can call">
-                  <span className="font-mono">createVault · protocolFill · sendPayout · closeVault · pause</span>
+                  <span className="font-mono">openIssue · allocateToTreasury · fundCoupon · fulfillRedeem · pause</span>
                 </Row>
               </dl>
             </div>
@@ -129,8 +121,8 @@ export default function ProtocolPage() {
               <p className="label">AUDITOR_ROLE</p>
               <h2 className="title mt-2 text-2xl">Auditor Safe</h2>
               <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-                The only key that can lock a round and release its payout. The role administers itself,
-                so the protocol admin cannot grant it.
+                The only key that can close the offer and open redemption. The role administers
+                itself, so the protocol admin cannot grant it.
               </p>
               <dl className="mt-6 space-y-3 text-[13px]">
                 <Row label="Safe">
@@ -161,10 +153,42 @@ export default function ProtocolPage() {
           </StaggerItem>
         </Stagger>
 
+        <Reveal delay={0.05} className="panel-mist mt-8 p-7">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="label">AGENT_ROLE</p>
+              <h2 className="title mt-2 text-2xl">Compliance agent</h2>
+              <p className="mt-3 max-w-[60ch] text-sm leading-relaxed text-muted-foreground">
+                Keeps the ERC-3643 register: records verified wallets, freezes a wallet or part of a balance,
+                forces a transfer under a court order, and moves a position to a new wallet after a lost key.
+              </p>
+            </div>
+            <Press>
+              <Link href="/compliance" className="btn btn-ghost btn-sm">
+                Compliance desk
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </Link>
+            </Press>
+          </div>
+          <dl className="mt-6 space-y-3 text-[13px]">
+            <Row label="Registry">
+              <AddressLink href={`https://sepolia.etherscan.io/address/${CONTRACTS.registry}`} value={CONTRACTS.registry} />
+            </Row>
+            <Row label="Can call">
+              <span className="font-mono">registerIdentity · setAddressFrozen · freezePartialTokens · forcedTransfer · recoveryAddress</span>
+            </Row>
+          </dl>
+        </Reveal>
+
         <Panel title="Deployed contracts" description="Ethereum Sepolia, chain ID 11155111." className="mt-8" bodyClassName="p-0" delay={0.05}>
           <ul className="hairline">
             {[
-              { name: "SukukVault", spec: "ERC-4626 vault. Issues sSUKUK shares.", address: CONTRACTS.sukukVault },
+              {
+                name: "SukukCertificate",
+                spec: "ERC-7092 bond, ERC-4626 accounting, ERC-7540 redemption. Issues SUKUK1.",
+                address: CONTRACTS.certificate,
+              },
+              { name: "InvestorRegistry", spec: "ERC-3643 KYC gate consulted on every transfer.", address: CONTRACTS.registry },
               { name: "MockIDRX", spec: "ERC-20, 18 decimals. Testnet only, not the official IDRX.", address: CONTRACTS.idrx },
             ].map((c) => (
               <li key={c.address} className="flex flex-col gap-2 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
@@ -187,9 +211,10 @@ export default function ProtocolPage() {
 
         <Reveal className="mt-8 rounded-[24px] bg-amber-soft px-7 py-6 text-[13px] leading-relaxed text-amber">
           <p className="font-semibold">What the contract does not check</p>
-          <p className="mt-1 max-w-[80ch]">
-            SukukVault does not verify that a real-world asset backs the round, or that the payout matches the
-            target yield. Those checks are made off-chain by the Safe owners before they sign.
+          <p className="mt-1 max-w-[86ch]">
+            The contract does not verify that a real-world asset backs the issue, or that a funded profit period
+            matches what the project actually earned. Those checks are made off-chain by the Safe owners before they
+            sign. The expected figure is published as expectedCouponAmount() for comparison.
           </p>
         </Reveal>
       </div>

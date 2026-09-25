@@ -4,8 +4,9 @@ import { useState } from "react";
 import { useAccount } from "wagmi";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, ArrowUpRight, Check, ExternalLink, RefreshCw } from "lucide-react";
-import { ADDRESSES } from "@/contracts/addresses";
-import { useSafePolicy, useVaultParameters, useVaultState, useVaultTotals } from "@/lib/contracts";
+import { ADDRESSES, PHASE } from "@/contracts/addresses";
+import { useIssue, useSafePolicy, useTreasuryBalance } from "@/lib/contracts";
+import { useNowSeconds } from "@/lib/useNow";
 import {
   fetchPendingSafeTransactions,
   fetchSafeInfo,
@@ -15,24 +16,24 @@ import {
   type SafeInfo,
   type SafePendingTransaction,
 } from "@/lib/safe";
-import { compactAddress, formatIDRX, toDisplayNumber } from "@/lib/formatters";
+import { compactAddress, formatIDRX, toDisplayNumber, untilLabel } from "@/lib/formatters";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { KeyFigures } from "@/components/ui/KeyFigures";
 import { Panel } from "@/components/ui/Panel";
 import { StepAction } from "@/components/ui/StepAction";
-import { StateBadge } from "@/components/ui/StateBadge";
+import { PhaseBadge } from "@/components/ui/PhaseBadge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { WalletConnect } from "@/components/wallet/WalletConnect";
 import { AnimatedNumber, EASE, PageTransition, Press, Reveal } from "@/components/ui/motion";
 
 export default function AuditorPage() {
   const { address, isConnected } = useAccount();
-  const { data: vaultStateRaw, isLoading: stateLoading, refetch: refetchState } = useVaultState();
-  const params = useVaultParameters();
-  const totals = useVaultTotals();
+  const issue = useIssue();
   const safePolicy = useSafePolicy();
+  const treasury = useTreasuryBalance();
+  const now = useNowSeconds();
 
-  const [loadingStep, setLoadingStep] = useState<"vault" | "payout" | null>(null);
+  const [loadingStep, setLoadingStep] = useState<"close" | "open" | null>(null);
   const [txHash, setTxHash] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [pendingTxs, setPendingTxs] = useState<SafePendingTransaction[]>([]);
@@ -40,12 +41,7 @@ export default function AuditorPage() {
   const [safeInfo, setSafeInfo] = useState<SafeInfo | null>(null);
   const [hasLoadedQueue, setHasLoadedQueue] = useState(false);
 
-  const s = Number(vaultStateRaw ?? 0);
-  const maxQuota = toDisplayNumber(params.maxQuota.data);
-  const totalAssets = toDisplayNumber(totals.totalAssets.data);
-  const totalSupply = toDisplayNumber(totals.totalSupply.data);
-  const filledPct = maxQuota > 0 ? (totalAssets / maxQuota) * 100 : 0;
-  const exchangeRate = totalSupply > 0 ? totalAssets / totalSupply : 1;
+  const { phase, terms } = issue;
   const safeQueueUrl = `https://app.safe.global/transactions/queue?safe=sep:${ADDRESSES.auditorMultisig}`;
   const threshold = safePolicy.threshold !== undefined ? Number(safePolicy.threshold) : safeInfo?.threshold;
   const policy =
@@ -53,8 +49,8 @@ export default function AuditorPage() {
       ? `${safePolicy.threshold}-of-${safePolicy.owners.length}`
       : null;
 
-  const canLock = s === 0 && !!params.vaultCreated.data && totalSupply > 0;
-  const canRelease = s === 2;
+  const canClose = phase === PHASE.Subscription && issue.supply > 0n;
+  const canOpen = phase === PHASE.Matured;
 
   async function loadQueue() {
     setLoadingPending(true);
@@ -65,7 +61,7 @@ export default function AuditorPage() {
     setLoadingPending(false);
   }
 
-  async function handlePropose(functionName: "approveVault" | "approvePayout") {
+  async function handlePropose(functionName: "closeSubscription" | "openRedemption") {
     if (!address) {
       setErrorMsg("Connect a wallet that owns the Safe first.");
       return;
@@ -76,14 +72,14 @@ export default function AuditorPage() {
       return;
     }
     try {
-      setLoadingStep(functionName === "approveVault" ? "vault" : "payout");
+      setLoadingStep(functionName === "closeSubscription" ? "close" : "open");
       setErrorMsg("");
       setTxHash("");
       await provider.request({ method: "eth_requestAccounts" });
       const res = await proposeSafeTransaction({ functionName, provider, signerAddress: address });
       setTxHash(res.safeTxHash);
       await loadQueue();
-      refetchState();
+      issue.refetch();
     } catch (e: unknown) {
       console.error("Safe SDK error:", e);
       setErrorMsg(getErrorMessage(e));
@@ -92,7 +88,7 @@ export default function AuditorPage() {
     }
   }
 
-  const proposeButton = (fn: "approveVault" | "approvePayout", ready: boolean) =>
+  const proposeButton = (fn: "closeSubscription" | "openRedemption", ready: boolean, key: "close" | "open") =>
     !isConnected ? (
       <WalletConnect />
     ) : (
@@ -103,7 +99,7 @@ export default function AuditorPage() {
           disabled={!ready || loadingStep !== null}
           className="btn btn-primary w-full"
         >
-          {loadingStep === (fn === "approveVault" ? "vault" : "payout") ? "Signing the Safe proposal…" : `Propose ${fn}()`}
+          {loadingStep === key ? "Signing the Safe proposal…" : `Propose ${fn}()`}
         </button>
       </Press>
     );
@@ -146,53 +142,73 @@ export default function AuditorPage() {
           <KeyFigures
             figures={[
               {
-                label: "Vault state",
+                label: "Phase",
                 lead: true,
-                value: stateLoading ? <Skeleton className="h-6 w-28" /> : <StateBadge state={s} />,
-                note: canLock ? "Ready for approveVault()" : canRelease ? "Ready for approvePayout()" : "No gate is open for the Safe",
+                value: issue.isLoading ? <Skeleton className="h-6 w-28" /> : <PhaseBadge phase={phase} />,
+                note: canClose
+                  ? "Ready for closeSubscription()"
+                  : canOpen
+                    ? "Ready for openRedemption()"
+                    : "No gate is open for the Safe",
               },
-              { label: "Subscribed", value: <AnimatedNumber value={totalAssets} suffix=" IDRX" />, note: `${filledPct.toFixed(1)}% of the quota` },
-              { label: "Shares issued", value: <AnimatedNumber value={totalSupply} />, note: "approveVault() needs at least one" },
-              { label: "Share price", value: exchangeRate.toFixed(4), note: "IDRX per sSUKUK" },
+              {
+                label: "Subscribed",
+                value: <AnimatedNumber value={toDisplayNumber(issue.principal)} suffix=" IDRX" />,
+                note: `${formatIDRX(issue.supply)} certificates issued`,
+              },
+              {
+                label: "At the project",
+                value: <AnimatedNumber value={toDisplayNumber(issue.deployedToTreasury)} suffix=" IDRX" />,
+                note: issue.deployedToTreasury === 0n ? "Nothing outstanding" : "Must return before redemption",
+              },
+              {
+                label: "Maturity",
+                value: issue.maturityDate > 0n ? untilLabel(Number(issue.maturityDate), now) : "Not started",
+                note: `${issue.couponsPaid} profit period${issue.couponsPaid === 1n ? "" : "s"} paid`,
+              },
             ]}
           />
         </Reveal>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-2">
           <StepAction
-            step="04"
-            title="Lock the round"
-            call="approveVault()"
-            description="Closes subscription and locks the deposited IDRX until maturity. Moves the vault from Open to Locked."
-            requires="Open"
-            current={s}
-            ready={canLock}
+            step="03"
+            title="Close the subscription"
+            call="closeSubscription()"
+            description="Ends the offer, starts the tenor and fixes the maturity date. From here the principal can be sent to the project."
+            requires="Subscription"
+            currentLabel={issue.isLoading ? "…" : undefined}
+            phase={phase}
+            ready={canClose}
             checks={[
-              { label: "Round configured", ok: !!params.vaultCreated.data },
-              { label: "Vault is Open", ok: s === 0 },
-              { label: `Shares issued (${formatIDRX(totalSupply)})`, ok: totalSupply > 0 },
+              { label: "Issue is in subscription", ok: phase === PHASE.Subscription },
+              { label: `Certificates issued (${formatIDRX(issue.supply)})`, ok: issue.supply > 0n },
+              { label: `Raised ${formatIDRX(issue.principal)} of ${formatIDRX(terms.quota)} IDRX`, ok: issue.principal > 0n },
             ]}
             delay={0.05}
           >
-            {proposeButton("approveVault", canLock)}
+            {proposeButton("closeSubscription", canClose, "close")}
           </StepAction>
 
           <StepAction
             step="06"
-            title="Release the payout"
-            call="approvePayout()"
-            description="Confirms the funded payout and opens redemption for every holder. Moves the vault from Matured to Approved for payout."
+            title="Open redemption"
+            call="openRedemption()"
+            description="Confirms the principal is back from the project and lets every holder request their money."
             requires="Matured"
-            current={s}
-            ready={canRelease}
+            phase={phase}
+            ready={canOpen}
             checks={[
-              { label: "Vault is Matured", ok: s === 2 },
-              { label: `Assets in vault (${formatIDRX(totalAssets)} IDRX)`, ok: totalAssets > 0 },
-              { label: `Share price at or above 1 (${exchangeRate.toFixed(4)})`, ok: exchangeRate >= 1 },
+              { label: "Tenor has elapsed and the issue is matured", ok: phase >= PHASE.Matured },
+              { label: "Project has returned the principal", ok: issue.deployedToTreasury === 0n },
+              {
+                label: `Treasury Safe holds ${formatIDRX(treasury.data ?? 0n)} IDRX`,
+                ok: (treasury.data ?? 0n) >= 0n,
+              },
             ]}
             delay={0.1}
           >
-            {proposeButton("approvePayout", canRelease)}
+            {proposeButton("openRedemption", canOpen, "open")}
           </StepAction>
         </div>
 
@@ -265,7 +281,10 @@ export default function AuditorPage() {
                       <p className="font-mono text-[13px] font-medium">{compactAddress(tx.safeTxHash)}</p>
                       <div className="mt-2 flex items-center gap-3">
                         <div className="h-1.5 w-28 overflow-hidden rounded-full bg-mint">
-                          <div className="h-full rounded-full bg-forest" style={{ width: `${need > 0 ? Math.min(100, (confirmed / need) * 100) : 0}%` }} />
+                          <div
+                            className="h-full rounded-full bg-forest"
+                            style={{ width: `${need > 0 ? Math.min(100, (confirmed / need) * 100) : 0}%` }}
+                          />
                         </div>
                         <span className="text-xs text-muted-foreground">
                           {confirmed} of {need} confirmations
@@ -281,6 +300,15 @@ export default function AuditorPage() {
             </ul>
           )}
         </Panel>
+
+        <Reveal className="mt-8 rounded-[24px] bg-amber-soft px-7 py-6 text-[13px] leading-relaxed text-amber">
+          <p className="font-semibold">What the contract does not check</p>
+          <p className="mt-1 max-w-[80ch]">
+            The contract cannot tell whether a real asset backs the issue, or whether a funded profit period matches what
+            the project actually earned. Those checks belong to the Safe owners before they sign. The expected figure is
+            published as <code className="font-mono">expectedCouponAmount()</code> for comparison.
+          </p>
+        </Reveal>
       </div>
     </PageTransition>
   );

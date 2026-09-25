@@ -36,7 +36,9 @@ export function Header() {
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
   const { data: hasProtocolRole } = useHasRole("PROTOCOL_ROLE", address);
+  const { data: hasAgentRole } = useHasRole("AGENT_ROLE", address);
   const isAdmin = isConnected && !!hasProtocolRole;
+  const isAgent = isConnected && !!hasAgentRole;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -71,7 +73,11 @@ export function Header() {
     };
   }, []);
 
-  const links = isAdmin ? [...NAV, { href: "/admin", label: "Admin" }] : NAV;
+  const links = [
+    ...NAV,
+    ...(isAgent ? [{ href: "/compliance", label: "Compliance" }] : []),
+    ...(isAdmin ? [{ href: "/admin", label: "Admin" }] : []),
+  ];
 
   return (
     <>

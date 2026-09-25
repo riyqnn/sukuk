@@ -11,19 +11,21 @@ import {
   useSpring,
   useTransform,
 } from "framer-motion";
-import { ArrowRight, ArrowUpRight, ExternalLink } from "lucide-react";
-import { ADDRESSES, CONTRACTS } from "@/contracts/addresses";
-import { useSafePolicy, useVaultParameters, useVaultState, useVaultTotals } from "@/lib/contracts";
+import { ArrowRight, ExternalLink } from "lucide-react";
+import { ADDRESSES, CONTRACTS, PHASE } from "@/contracts/addresses";
+import { useIssue, useSafePolicy } from "@/lib/contracts";
+import { useNowSeconds } from "@/lib/useNow";
 import {
   basisPointsToPercent,
   compactAddress,
   formatDuration,
   formatIDRX,
-  stateLabel,
+  phaseLabel,
   toDisplayNumber,
+  untilLabel,
 } from "@/lib/formatters";
 import { VaultRing } from "@/components/ui/VaultRing";
-import { StateBadge } from "@/components/ui/StateBadge";
+import { PhaseBadge } from "@/components/ui/PhaseBadge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import {
   AnimatedNumber,
@@ -40,61 +42,66 @@ import {
 
 const STEPS = [
   {
-    name: "Open",
-    actor: "Investors",
-    call: "deposit(assets, receiver)",
-    text: "The round accepts IDRX until the quota is full. Every deposit mints sSUKUK shares at the current share price.",
+    name: "KYC gate",
+    standard: "ERC-3643",
+    actor: "Compliance agent",
+    call: "registerIdentity()",
+    text: "An agent records the wallet in the investor registry. Only registered, unfrozen wallets can ever hold the certificate, so every later step inherits the check.",
   },
   {
-    name: "Locked",
-    actor: "Auditor Safe",
-    call: "approveVault()",
-    text: "The auditor Safe closes subscription. Deposits and redemptions both stop, and the lock period starts counting.",
+    name: "Certificate issued",
+    standard: "ERC-7092 · ERC-4626",
+    actor: "Investor",
+    call: "deposit()",
+    text: "The investor subscribes with IDRX and receives a bond certificate carrying the tenor, the denomination and the profit rate. One certificate is minted per unit of principal.",
   },
   {
-    name: "Matured",
+    name: "Treasury custody",
+    standard: "Gnosis Safe",
     actor: "Protocol",
-    call: "sendPayout(amount)",
-    text: "Once the lock period ends, the protocol pays the return into the vault. The share price rises by exactly that amount.",
+    call: "allocateToTreasury()",
+    text: "The principal moves to a Safe and out to the real-world project. It is recorded as deployed rather than spent, so the certificate keeps its full principal value.",
   },
   {
-    name: "Approved for payout",
-    actor: "Auditor Safe",
-    call: "approvePayout()",
-    text: "The auditor Safe confirms the payout. From this block on, every holder can redeem.",
-  },
-  {
-    name: "Closed",
+    name: "Profit shared",
+    standard: "ERC-4626",
     actor: "Protocol",
-    call: "closeVault()",
-    text: "The round is marked settled. Redemption stays open, so a late holder is never locked out.",
+    call: "fundCoupon()",
+    text: "Each period the project's profit is paid into the contract and split by share of the issue. Holders pull their part whenever they like, and a transfer carries no unclaimed profit with it.",
+  },
+  {
+    name: "Redemption",
+    standard: "ERC-7540",
+    actor: "Investor and issuer",
+    call: "requestRedeem() → redeem()",
+    text: "After maturity the treasury repays, the auditor Safe opens redemption, and the principal comes back through a request the issuer settles before the investor claims.",
   },
 ];
 
-/** What a visitor can do at each on-chain state, so the page answers "now what?". */
+/** What a visitor can do at each phase, so the page answers "now what?". */
 const NOW: Record<number, { line: string; cta: string; href: string }> = {
-  0: { line: "The round is open. Deposits are being accepted.", cta: "Deposit IDRX", href: "/sukuk" },
-  1: { line: "Funds are locked until maturity. Nothing moves until then.", cta: "Track the round", href: "/sukuk" },
-  2: { line: "The payout is funded and waiting on the auditor Safe.", cta: "See the auditor gate", href: "/auditor" },
-  3: { line: "Redemption is open. Holders can take principal plus payout.", cta: "Redeem shares", href: "/sukuk" },
-  4: { line: "The round is settled. Remaining holders can still redeem.", cta: "Redeem shares", href: "/sukuk" },
+  [PHASE.Subscription]: { line: "Subscription is open. Certificates are being issued.", cta: "Subscribe", href: "/sukuk" },
+  [PHASE.Active]: { line: "The issue is running. Profit is shared each period.", cta: "Claim your profit", href: "/sukuk" },
+  [PHASE.Matured]: {
+    line: "The tenor is over and the principal is back. Waiting on the auditor Safe.",
+    cta: "See the auditor gate",
+    href: "/auditor",
+  },
+  [PHASE.Redeeming]: { line: "Redemption is open. Request, then claim your principal.", cta: "Redeem", href: "/sukuk" },
+  [PHASE.Closed]: { line: "The issue is settled. Remaining holders can still claim.", cta: "Redeem", href: "/sukuk" },
 };
 
 export default function HomePage() {
-  const { data: rawState, isLoading: stateLoading } = useVaultState();
-  const params = useVaultParameters();
-  const totals = useVaultTotals();
+  const issue = useIssue();
   const safe = useSafePolicy();
+  const now = useNowSeconds();
   const reduce = useReducedMotion();
 
-  const state = rawState ?? 0;
-  const configured = params.vaultCreated.data === true;
-  const quota = toDisplayNumber(params.maxQuota.data);
-  const raised = toDisplayNumber(totals.totalAssets.data);
-  const shares = toDisplayNumber(totals.totalSupply.data);
+  const { phase, terms } = issue;
+  const configured = terms.quota > 0n;
+  const quota = toDisplayNumber(terms.quota);
+  const raised = toDisplayNumber(issue.principal);
   const filledPct = quota > 0 ? Math.min(100, (raised / quota) * 100) : 0;
-  const sharePrice = shares > 0 ? raised / shares : 1;
-  const loading = params.vaultCreated.isLoading || totals.totalAssets.isLoading;
 
   const heroRef = useRef<HTMLElement>(null);
   const { scrollYProgress: heroProgress } = useScroll({ target: heroRef, offset: ["start start", "end start"] });
@@ -104,11 +111,11 @@ export default function HomePage() {
   const cardNear = useTransform(heroScroll, [0, 1], [0, -140]);
   const cardFar = useTransform(heroScroll, [0, 1], [0, -40]);
 
-  const now = NOW[state];
+  const nowLine = NOW[phase];
 
   return (
     <PageTransition>
-      {/* Hero: the promise on the left, the live vault on the right. */}
+      {/* Hero: the promise on the left, the live issue on the right. */}
       <section ref={heroRef} className="relative overflow-hidden">
         <div
           aria-hidden="true"
@@ -117,15 +124,15 @@ export default function HomePage() {
         <div className="container grid items-center gap-14 pb-20 pt-14 md:pt-20 lg:grid-cols-[1.02fr_0.98fr] lg:gap-10 lg:pb-28 lg:pt-24">
           <motion.div style={reduce ? undefined : { y: copyY, opacity: copyFade }}>
             <Reveal>
-              <p className="kicker">ERC-4626 Sukuk vault on Sepolia</p>
+              <p className="kicker">Tokenized Sukuk on Ethereum Sepolia</p>
             </Reveal>
             <h1 className="display display-xl mt-6">
-              <span className="sr-only">Sukuk you can verify, block by block.</span>
+              <span className="sr-only">A Sukuk you can verify, block by block.</span>
               <span aria-hidden="true">
                 <LineReveal
                   delay={0.1}
                   lines={[
-                    "Sukuk you",
+                    "A Sukuk you",
                     <>
                       can <Mark>verify,</Mark>
                     </>,
@@ -135,15 +142,15 @@ export default function HomePage() {
               </span>
             </h1>
             <Reveal delay={0.35}>
-              <p className="lede mt-7 max-w-[46ch]">
-                Deposit IDRX, hold sSUKUK shares, and redeem principal plus the funded payout. Every
-                step is a transaction you can read on Sepolia, and two of them need the auditor Safe.
+              <p className="lede mt-7 max-w-[47ch]">
+                KYC at the gate, a bond certificate on-chain, the principal held in a Safe while it funds the project,
+                and the profit shared every period. Five standards, one flow you can read on Sepolia.
               </p>
             </Reveal>
             <Reveal delay={0.45} className="mt-9 flex flex-wrap items-center gap-3">
               <Press>
                 <Link href="/sukuk" className="btn btn-primary">
-                  Open the vault
+                  Open the terminal
                   <span className="btn-icon">
                     <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                   </span>
@@ -151,24 +158,34 @@ export default function HomePage() {
               </Press>
               <Press>
                 <a href="#lifecycle" className="btn btn-ghost">
-                  How a round works
+                  How an issue works
                 </a>
               </Press>
             </Reveal>
+            <Reveal delay={0.5}>
+              <ul className="mt-9 flex flex-wrap gap-2">
+                {["ERC-3643", "ERC-7092", "ERC-4626", "ERC-7540", "Gnosis Safe"].map((s) => (
+                  <li key={s} className="chip bg-mist text-muted-foreground">
+                    {s}
+                  </li>
+                ))}
+              </ul>
+            </Reveal>
           </motion.div>
 
-          {/* Live vault. Cards sit at two depths so the scene separates as you scroll. */}
           <Reveal delay={0.2} className="relative mx-auto w-full max-w-[540px]">
             <div className="relative aspect-square">
-              <VaultRing filledPct={filledPct} state={state} configured={configured} scroll={heroScroll} />
+              <VaultRing filledPct={filledPct} state={phase} configured={configured} scroll={heroScroll} />
 
               <div className="absolute inset-0 grid place-items-center">
                 <div className="text-center">
-                  <p className="label">Share price</p>
+                  <p className="label">Profit rate</p>
                   <p className="figure mt-1.5 text-[clamp(1.6rem,3.4vw,2.25rem)] font-medium leading-none">
-                    {loading ? <Skeleton className="h-8 w-28" /> : sharePrice.toFixed(4)}
+                    {issue.isLoading ? <Skeleton className="h-8 w-28" /> : basisPointsToPercent(Number(terms.couponRate))}
                   </p>
-                  <p className="mt-1.5 text-xs text-muted-foreground">IDRX per sSUKUK</p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    every {formatDuration(Number(terms.couponInterval))}
+                  </p>
                 </div>
               </div>
 
@@ -179,10 +196,10 @@ export default function HomePage() {
                 <div className="rounded-2xl border border-line bg-white/95 p-4 shadow-[0_20px_40px_-28px_#16603f66]">
                   <p className="label">Subscribed</p>
                   <p className="figure mt-1.5 text-lg font-medium leading-none">
-                    {loading ? <Skeleton className="h-5 w-20" /> : <AnimatedNumber value={raised} />}
+                    {issue.isLoading ? <Skeleton className="h-5 w-20" /> : <AnimatedNumber value={raised} />}
                   </p>
                   <p className="mt-1.5 text-xs text-muted-foreground">
-                    of {configured ? formatIDRX(quota) : "no"} IDRX quota
+                    of {configured ? formatIDRX(terms.quota) : "no"} IDRX quota
                   </p>
                 </div>
               </motion.div>
@@ -192,13 +209,12 @@ export default function HomePage() {
                 className="absolute -right-6 bottom-[10%] hidden w-[220px] sm:block"
               >
                 <div className="rounded-2xl border border-line bg-white/95 p-4 shadow-[0_20px_40px_-28px_#16603f66]">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="label">Vault state</p>
+                  <p className="label">Phase</p>
+                  <div className="mt-2">
+                    {issue.isLoading ? <Skeleton className="h-6 w-24" /> : <PhaseBadge phase={phase} />}
                   </div>
-                  <div className="mt-2">{stateLoading ? <Skeleton className="h-6 w-24" /> : <StateBadge state={state} />}</div>
                   <p className="mt-2.5 text-xs text-muted-foreground">
-                    Target yield {basisPointsToPercent(Number(params.apy.data ?? 0n))} · lock{" "}
-                    {formatDuration(Number(params.duration.data ?? 0n))}
+                    {issue.couponsPaid.toString()} profit period{issue.couponsPaid === 1n ? "" : "s"} paid
                   </p>
                 </div>
               </motion.div>
@@ -207,50 +223,59 @@ export default function HomePage() {
             <dl className="mt-4 grid grid-cols-2 gap-3 sm:hidden">
               <div className="rounded-2xl border border-line bg-white p-4">
                 <dt className="label">Subscribed</dt>
-                <dd className="figure mt-1.5 text-lg font-medium leading-none">{formatIDRX(raised)}</dd>
-                <dd className="mt-1 text-xs text-muted-foreground">of {configured ? formatIDRX(quota) : "no"} IDRX</dd>
+                <dd className="figure mt-1.5 text-lg font-medium leading-none">{formatIDRX(issue.principal)}</dd>
+                <dd className="mt-1 text-xs text-muted-foreground">
+                  of {configured ? formatIDRX(terms.quota) : "no"} IDRX
+                </dd>
               </div>
               <div className="rounded-2xl border border-line bg-white p-4">
-                <dt className="label">Target yield</dt>
-                <dd className="figure mt-1.5 text-lg font-medium leading-none">{basisPointsToPercent(Number(params.apy.data ?? 0n))}</dd>
-                <dd className="mt-1 text-xs text-muted-foreground">lock {formatDuration(Number(params.duration.data ?? 0n))}</dd>
+                <dt className="label">Profit rate</dt>
+                <dd className="figure mt-1.5 text-lg font-medium leading-none">
+                  {basisPointsToPercent(Number(terms.couponRate))}
+                </dd>
+                <dd className="mt-1 text-xs text-muted-foreground">
+                  every {formatDuration(Number(terms.couponInterval))}
+                </dd>
               </div>
             </dl>
           </Reveal>
         </div>
       </section>
 
-      {/* Right-now band: the one action the current state allows. */}
+      {/* Right-now band: the one action this phase allows. */}
       <section className="border-y border-line bg-mist">
         <div className="container flex flex-col gap-5 py-7 md:flex-row md:items-center md:justify-between">
           <div className="flex flex-wrap items-center gap-4">
             <span className="label">Right now</span>
-            {stateLoading ? <Skeleton className="h-6 w-28" /> : <StateBadge state={state} />}
+            {issue.isLoading ? <Skeleton className="h-6 w-28" /> : <PhaseBadge phase={phase} />}
             <p className="text-[15px] font-medium">
-              {configured ? now.line : "No round has been configured on this deployment yet."}
+              {configured ? nowLine.line : "No issue has been configured on this deployment yet."}
             </p>
           </div>
           {configured && (
-            <Link href={now.href} className="inline-flex items-center gap-2 text-sm font-semibold text-forest hover:text-forest-deep">
-              {now.cta} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            <Link
+              href={nowLine.href}
+              className="inline-flex items-center gap-2 text-sm font-semibold text-forest hover:text-forest-deep"
+            >
+              {nowLine.cta} <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </Link>
           )}
         </div>
       </section>
 
-      <Lifecycle state={state} configured={configured} />
+      <Lifecycle phase={phase} configured={configured} />
 
-      {/* Roles: who can move the round, and what each key is allowed to call. */}
+      {/* Roles: who can move the issue, and what each key is allowed to call. */}
       <section className="container py-24 lg:py-32">
         <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:gap-20">
           <Reveal>
             <p className="kicker">Roles and keys</p>
             <h2 className="display display-lg mt-5">
-              Three roles. <Mark>No shortcuts</Mark> between them.
+              Four roles. <Mark>No shortcuts</Mark> between them.
             </h2>
             <p className="lede mt-7 max-w-[42ch]">
-              AUDITOR_ROLE administers itself, so the protocol admin cannot grant it to its own key.
-              The gates that lock funds and release them belong to the Safe.
+              AUDITOR_ROLE administers itself, so the protocol admin cannot grant it to its own key. The gates that lock
+              the money and release it belong to the Safe.
             </p>
           </Reveal>
 
@@ -260,7 +285,7 @@ export default function HomePage() {
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <p className="label">Auditor Safe · AUDITOR_ROLE</p>
-                    <p className="title mt-2 text-2xl">Locks the round and releases the payout</p>
+                    <p className="title mt-2 text-2xl">Closes the issue and releases the principal</p>
                   </div>
                   <span className="chip bg-pistachio text-forest-deep">
                     {safe.isLoading
@@ -271,55 +296,54 @@ export default function HomePage() {
                   </span>
                 </div>
                 <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
-                  <code className="font-mono text-[13px] text-muted-foreground">approveVault() · approvePayout()</code>
+                  <code className="font-mono text-[13px] text-muted-foreground">
+                    closeSubscription() · openRedemption()
+                  </code>
                   <a
                     href={`https://app.safe.global/home?safe=sep:${ADDRESSES.auditorMultisig}`}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 font-mono text-[13px] font-medium text-forest hover:underline"
                   >
-                    {compactAddress(ADDRESSES.auditorMultisig)} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    {compactAddress(ADDRESSES.auditorMultisig)}{" "}
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                   </a>
                 </div>
               </div>
             </StaggerItem>
 
-            <StaggerItem>
-              <div className="panel-mist lift h-full p-7">
-                <p className="label">Protocol · PROTOCOL_ROLE</p>
-                <p className="title mt-2 text-xl">Runs the round</p>
-                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-                  Creates it, tops up the quota, funds the payout, closes it, and can pause.
-                </p>
-                <ul className="mt-6 space-y-1.5">
-                  {ADDRESSES.protocolAdmins.map((a) => (
-                    <li key={a}>
-                      <a
-                        href={`https://sepolia.etherscan.io/address/${a}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 font-mono text-[13px] font-medium text-forest hover:underline"
-                      >
-                        {compactAddress(a)} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </StaggerItem>
-
-            <StaggerItem>
-              <div className="panel-mist lift h-full p-7">
-                <p className="label">Investors · no role needed</p>
-                <p className="title mt-2 text-xl">Deposit and redeem</p>
-                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-                  Any wallet can deposit while the round is open and redeem once the payout is approved.
-                </p>
-                <Link href="/portfolio" className="mt-6 inline-flex items-center gap-1.5 text-[13px] font-semibold text-forest hover:underline">
-                  See your position <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-                </Link>
-              </div>
-            </StaggerItem>
+            {[
+              {
+                label: "Protocol · PROTOCOL_ROLE",
+                title: "Runs the issue",
+                text: "Opens it, moves principal to and from the treasury, funds each profit period, settles redemptions.",
+                href: `https://sepolia.etherscan.io/address/${ADDRESSES.protocolAdmin}`,
+                value: compactAddress(ADDRESSES.protocolAdmin),
+              },
+              {
+                label: "Compliance · AGENT_ROLE",
+                title: "Keeps the register",
+                text: "Registers verified investors, freezes wallets or balances, forces a transfer and recovers a lost wallet.",
+                href: `https://sepolia.etherscan.io/address/${CONTRACTS.registry}`,
+                value: compactAddress(CONTRACTS.registry),
+              },
+            ].map((r) => (
+              <StaggerItem key={r.label}>
+                <div className="panel-mist lift h-full p-7">
+                  <p className="label">{r.label}</p>
+                  <p className="title mt-2 text-xl">{r.title}</p>
+                  <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{r.text}</p>
+                  <a
+                    href={r.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-6 inline-flex items-center gap-1.5 font-mono text-[13px] font-medium text-forest hover:underline"
+                  >
+                    {r.value} <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                </div>
+              </StaggerItem>
+            ))}
           </Stagger>
         </div>
       </section>
@@ -330,7 +354,16 @@ export default function HomePage() {
           <Parallax distance={40} className="pointer-events-none absolute -right-24 -top-24 hidden w-[420px] opacity-70 md:block">
             <svg viewBox="0 0 400 400" aria-hidden="true">
               {[180, 150, 120, 90].map((r) => (
-                <circle key={r} cx="200" cy="200" r={r} fill="none" stroke="#8fc4a6" strokeWidth="1" strokeDasharray={r === 150 ? "2 6" : undefined} />
+                <circle
+                  key={r}
+                  cx="200"
+                  cy="200"
+                  r={r}
+                  fill="none"
+                  stroke="#8fc4a6"
+                  strokeWidth="1"
+                  strokeDasharray={r === 150 ? "2 6" : undefined}
+                />
               ))}
             </svg>
           </Parallax>
@@ -339,12 +372,12 @@ export default function HomePage() {
             <div>
               <h2 className="display display-lg max-w-[16ch]">Every figure here is read from Sepolia.</h2>
               <p className="mt-5 max-w-[44ch] text-[15px] leading-relaxed text-forest-deep">
-                Nothing on this site is typed in by hand. Check the vault and the token yourself, then
-                connect a wallet when you are ready.
+                Nothing on this site is typed in by hand. Check the contracts yourself, then connect a wallet once the
+                compliance agent has registered it.
               </p>
               <Press className="mt-8">
                 <Link href="/sukuk" className="btn btn-primary">
-                  Deposit into the vault
+                  Open the terminal
                   <span className="btn-icon">
                     <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                   </span>
@@ -354,7 +387,8 @@ export default function HomePage() {
 
             <ul className="space-y-3">
               {[
-                { name: "SukukVault", spec: "ERC-4626 vault, sSUKUK shares", address: CONTRACTS.sukukVault },
+                { name: "SukukCertificate", spec: "ERC-7092 bond · ERC-4626 · ERC-7540", address: CONTRACTS.certificate },
+                { name: "InvestorRegistry", spec: "ERC-3643 KYC gate", address: CONTRACTS.registry },
                 { name: "MockIDRX", spec: "Testnet underlying, 18 decimals", address: CONTRACTS.idrx },
               ].map((c) => (
                 <li key={c.address}>
@@ -378,16 +412,23 @@ export default function HomePage() {
             </ul>
           </div>
         </Reveal>
+
+        {issue.maturityDate > 0n && (
+          <p className="mt-8 text-center text-[13px] text-muted-foreground">
+            This issue matures {untilLabel(Number(issue.maturityDate), now)}. Testnet timings are shortened so the whole
+            lifecycle can be walked through in one session.
+          </p>
+        )}
       </section>
     </PageTransition>
   );
 }
 
 /**
- * Pinned walkthrough of the five states. The left column stays put while the steps
- * scroll past; the step nearest the middle of the screen becomes the active one.
+ * Pinned walkthrough of the five stages. The left column stays put while the cards scroll past;
+ * the card nearest the middle of the screen becomes the active one.
  */
-function Lifecycle({ state, configured }: { state: number; configured: boolean }) {
+function Lifecycle({ phase, configured }: { phase: number; configured: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start center", "end center"] });
@@ -396,17 +437,20 @@ function Lifecycle({ state, configured }: { state: number; configured: boolean }
     setActive(Math.min(STEPS.length - 1, Math.max(0, Math.floor(p * STEPS.length))));
   });
 
+  // The KYC gate is stage 0 and sits outside the contract phases, which start at "certificate issued".
+  const liveIndex = configured ? phase + 1 : -1;
+
   return (
     <section id="lifecycle" className="scroll-mt-24 border-b border-line">
       <div ref={ref} className="container grid gap-12 py-24 lg:grid-cols-[0.85fr_1.15fr] lg:gap-20 lg:py-32">
         <div className="lg:sticky lg:top-28 lg:h-fit">
           <Reveal>
-            <p className="kicker">How a round works</p>
+            <p className="kicker">How an issue works</p>
             <h2 className="display display-lg mt-5">
-              Five states, <Mark>one direction.</Mark>
+              Five stages, <Mark>one direction.</Mark>
             </h2>
             <p className="lede mt-7 max-w-[40ch]">
-              SukukVault only moves forward. Each step is a separate transaction from a separate role.
+              Each stage is a separate transaction from a separate role, and the contract only ever moves forward.
             </p>
           </Reveal>
 
@@ -428,10 +472,14 @@ function Lifecycle({ state, configured }: { state: number; configured: boolean }
                   >
                     <span className={`h-1.5 w-1.5 rounded-full ${i <= active ? "bg-white" : "bg-transparent"}`} />
                   </span>
-                  <span className={`text-sm transition-colors duration-500 ${i === active ? "font-semibold text-ink" : "text-muted-foreground"}`}>
+                  <span
+                    className={`text-sm transition-colors duration-500 ${
+                      i === active ? "font-semibold text-ink" : "text-muted-foreground"
+                    }`}
+                  >
                     {s.name}
                   </span>
-                  {configured && i === state && <span className="chip bg-pistachio text-forest-deep">Live now</span>}
+                  {i === liveIndex && <span className="chip bg-pistachio text-forest-deep">Live now</span>}
                 </li>
               ))}
             </ol>
@@ -441,7 +489,7 @@ function Lifecycle({ state, configured }: { state: number; configured: boolean }
         <ol className="space-y-5 lg:space-y-[18vh] lg:py-[8vh]">
           {STEPS.map((s, i) => (
             <li key={s.name}>
-              <StepCard step={s} index={i} active={i === active} live={configured && i === state} />
+              <StepCard step={s} index={i} active={i === active} live={i === liveIndex} phase={phase} />
             </li>
           ))}
         </ol>
@@ -455,11 +503,13 @@ function StepCard({
   index,
   active,
   live,
+  phase,
 }: {
   step: (typeof STEPS)[number];
   index: number;
   active: boolean;
   live: boolean;
+  phase: number;
 }) {
   return (
     <motion.article
@@ -468,28 +518,29 @@ function StepCard({
       viewport={{ once: true, margin: "-80px" }}
       transition={{ duration: 0.8, ease: EASE }}
       className={`rounded-[24px] border p-7 transition-[border-color,background-color,box-shadow] duration-500 sm:p-9 ${
-        active
-          ? "border-mint-3 bg-white shadow-[0_28px_60px_-40px_#16603f80]"
-          : "border-line bg-mist lg:bg-white"
+        active ? "border-mint-3 bg-white shadow-[0_28px_60px_-40px_#16603f80]" : "border-line bg-mist lg:bg-white"
       }`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="figure text-sm text-muted-foreground">{String(index + 1).padStart(2, "0")} / 05</span>
-        <AnimatePresence>
-          {live && (
-            <motion.span
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              className="chip bg-pistachio text-forest-deep"
-            >
-              Live on-chain · {stateLabel(index)}
-            </motion.span>
-          )}
-        </AnimatePresence>
+        <div className="flex items-center gap-2">
+          <span className="chip bg-mist text-muted-foreground">{step.standard}</span>
+          <AnimatePresence>
+            {live && (
+              <motion.span
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0 }}
+                className="chip bg-pistachio text-forest-deep"
+              >
+                Live · {phaseLabel(phase)}
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
       <h3 className="title mt-5 text-[1.75rem] leading-tight">{step.name}</h3>
-      <p className="mt-3 max-w-[52ch] text-[15px] leading-relaxed text-muted-foreground">{step.text}</p>
+      <p className="mt-3 max-w-[54ch] text-[15px] leading-relaxed text-muted-foreground">{step.text}</p>
       <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-line pt-5 text-[13px]">
         <span>
           <span className="text-muted-foreground">Called by </span>

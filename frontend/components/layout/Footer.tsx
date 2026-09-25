@@ -8,18 +8,20 @@ import { useSafePolicy } from "@/lib/contracts";
 import { BrandMark } from "./Header";
 
 const PAGES = [
-  { href: "/sukuk", label: "Vault terminal" },
+  { href: "/sukuk", label: "Certificate terminal" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/transactions", label: "Ledger" },
   { href: "/protocol", label: "Protocol" },
   { href: "/auditor", label: "Auditor portal" },
+  { href: "/compliance", label: "Compliance desk" },
 ];
 
 export function Footer() {
   const safe = useSafePolicy();
 
   const contracts = [
-    { label: "SukukVault", href: `https://sepolia.etherscan.io/address/${CONTRACTS.sukukVault}`, value: CONTRACTS.sukukVault },
+    { label: "SukukCertificate", href: `https://sepolia.etherscan.io/address/${CONTRACTS.certificate}`, value: CONTRACTS.certificate },
+    { label: "InvestorRegistry", href: `https://sepolia.etherscan.io/address/${CONTRACTS.registry}`, value: CONTRACTS.registry },
     { label: "MockIDRX", href: `https://sepolia.etherscan.io/address/${CONTRACTS.idrx}`, value: CONTRACTS.idrx },
     {
       label:
@@ -40,8 +42,8 @@ export function Footer() {
             <span className="title text-[17px]">Sukuk Vault</span>
           </Link>
           <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-            An ERC-4626 Sukuk vault on Ethereum Sepolia. Deposits, payout funding and redemption are
-            recorded on-chain and readable by anyone.
+            A tokenized Sukuk on Ethereum Sepolia: KYC-gated certificates, profit shared every period,
+            and principal redeemed after maturity. Every step is readable on-chain.
           </p>
           <p className="mt-4 rounded-xl bg-white px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground ring-1 ring-line">
             Testnet only. The underlying MockIDRX is minted for testing and is not the official IDRX

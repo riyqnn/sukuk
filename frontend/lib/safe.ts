@@ -1,7 +1,7 @@
 import Safe from "@safe-global/protocol-kit";
 import SafeApiKit from "@safe-global/api-kit";
 import { encodeFunctionData, getAddress } from "viem";
-import { SUKUK_VAULT_ABI } from "@/contracts/abis";
+import { CERTIFICATE_ABI } from "@/contracts/abis";
 import { CONTRACTS, ADDRESSES } from "@/contracts/addresses";
 
 const SEPOLIA_CHAIN_ID = 11155111n;
@@ -89,7 +89,7 @@ export async function proposeSafeTransaction({
   provider: initialProvider,
   signerAddress,
 }: {
-  functionName: "approveVault" | "approvePayout";
+  functionName: "closeSubscription" | "openRedemption";
   provider?: Eip1193Provider;
   signerAddress: string;
 }): Promise<{ safeTxHash: string; signature: string }> {
@@ -110,11 +110,11 @@ export async function proposeSafeTransaction({
 
   const checksummedSafe = getAddress(ADDRESSES.auditorMultisig);
   const checksummedSigner = getAddress(activeSigner);
-  const checksummedTarget = getAddress(CONTRACTS.sukukVault);
+  const checksummedTarget = getAddress(CONTRACTS.certificate);
 
   // 1. Encode contract function call
   const callData = encodeFunctionData({
-    abi: SUKUK_VAULT_ABI,
+    abi: CERTIFICATE_ABI,
     functionName,
     args: [],
   });

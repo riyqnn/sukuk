@@ -53,25 +53,41 @@ export function basisPointsToPercent(bps: number): string {
   return `${(bps / 100).toFixed(2)}%`;
 }
 
-export function stateLabel(state: number): string {
+export function phaseLabel(phase: number): string {
   const labels: Record<number, string> = {
-    0: "Open",
-    1: "Locked",
+    0: "Subscription",
+    1: "Active",
     2: "Matured",
-    3: "Approved for payout",
+    3: "Redeeming",
     4: "Closed",
   };
-  return labels[state] ?? "Unknown";
+  return labels[phase] ?? "Unknown";
 }
 
-/** Green where the user can act; amber where the round waits on another role. */
-export function stateTone(state: number): string {
+/** Green where the investor can act; amber where the issue waits on another role. */
+export function phaseTone(phase: number): string {
   const tones: Record<number, string> = {
     0: "bg-mint text-forest-deep",
-    1: "bg-amber-soft text-amber",
+    1: "bg-mint-2 text-forest-deep",
     2: "bg-amber-soft text-amber",
-    3: "bg-mint-2 text-forest-deep",
+    3: "bg-mint text-forest-deep",
     4: "bg-white text-muted-foreground ring-1 ring-line-strong",
   };
-  return tones[state] ?? "bg-mist text-muted-foreground";
+  return tones[phase] ?? "bg-mist text-muted-foreground";
+}
+
+/** Countdown to `target`, or how long ago it passed. */
+export function untilLabel(target: number, now: number): string {
+  if (!target) return "Not set";
+  const diff = target - now;
+  const abs = Math.abs(diff);
+  const unit =
+    abs < 60
+      ? `${abs}s`
+      : abs < 3600
+        ? `${Math.round(abs / 60)} min`
+        : abs < 86400
+          ? `${Math.round(abs / 3600)} hr`
+          : `${Math.round(abs / 86400)} days`;
+  return diff > 0 ? `in ${unit}` : `${unit} ago`;
 }

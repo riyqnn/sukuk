@@ -13,18 +13,25 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { WalletConnect } from "@/components/wallet/WalletConnect";
 import { EASE, PageTransition } from "@/components/ui/motion";
 
-/** Money events carry an amount; gate events mark a change of state. */
+/** Money events carry an amount; gate events mark a change of phase or compliance. */
 const EVENTS: Record<ActivityKind, { label: string; money: boolean }> = {
-  VaultCreated: { label: "Round created", money: true },
-  Deposited: { label: "Deposit", money: true },
-  ProtocolFilled: { label: "Protocol fill", money: true },
-  VaultLocked: { label: "Locked by auditor Safe", money: false },
-  PayoutFunded: { label: "Payout funded", money: true },
-  PayoutApproved: { label: "Payout approved by auditor Safe", money: false },
-  Redeemed: { label: "Redemption", money: true },
-  VaultClosed: { label: "Round closed", money: false },
-  Paused: { label: "Vault paused", money: false },
-  Unpaused: { label: "Vault unpaused", money: false },
+  IssueOpened: { label: "Issue opened", money: true },
+  Deposit: { label: "Subscription", money: true },
+  SubscriptionClosed: { label: "Subscription closed by auditor Safe", money: false },
+  AllocatedToTreasury: { label: "Principal sent to the project", money: true },
+  ReturnedFromTreasury: { label: "Principal returned by the project", money: true },
+  CouponFunded: { label: "Profit period funded", money: true },
+  CouponClaimed: { label: "Profit claimed", money: true },
+  Matured: { label: "Matured", money: false },
+  RedemptionOpened: { label: "Redemption opened by auditor Safe", money: false },
+  RedeemRequest: { label: "Redemption requested", money: false },
+  RedeemFulfilled: { label: "Redemption settled by issuer", money: true },
+  Withdraw: { label: "Principal claimed", money: true },
+  IssueClosed: { label: "Issue closed", money: false },
+  AddressFrozen: { label: "Wallet freeze changed", money: false },
+  RecoverySuccess: { label: "Wallet recovered", money: false },
+  Paused: { label: "Contract paused", money: false },
+  Unpaused: { label: "Contract unpaused", money: false },
 };
 
 function when(ts: number): string {
@@ -51,11 +58,11 @@ export default function TransactionsPage() {
       <div className="container pb-24">
         <PageHeader
           kicker="Ledger"
-          title="Everything the vault has done"
-          description="Read straight from SukukVault's event logs on Sepolia. New events appear here as soon as they are mined."
+          title="Everything the issue has done"
+          description="Read straight from the certificate's event logs on Sepolia. New events appear here as soon as they are mined."
           aside={
             <a
-              href={`https://sepolia.etherscan.io/address/${CONTRACTS.sukukVault}#events`}
+              href={`https://sepolia.etherscan.io/address/${CONTRACTS.certificate}#events`}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground hover:text-forest"
@@ -66,7 +73,7 @@ export default function TransactionsPage() {
         />
 
         <Panel
-          title="Vault events"
+          title="Certificate events"
           description={isLoading ? "Reading logs…" : `${rows.length} ${rows.length === 1 ? "event" : "events"}${scope === "mine" ? " involving your wallet" : ""}`}
           bodyClassName="p-0"
           action={
@@ -127,7 +134,7 @@ export default function TransactionsPage() {
           ) : rows.length === 0 ? (
             <Empty
               title={scope === "mine" ? "No events for your wallet" : "No events yet"}
-              text={scope === "mine" ? "Deposit or redeem and the transaction shows up here." : "The vault has not emitted any events on this deployment."}
+              text={scope === "mine" ? "Subscribe, claim profit or redeem and it shows up here." : "The certificate has not emitted any events on this deployment."}
             />
           ) : (
             <ol className="hairline">
@@ -163,13 +170,13 @@ export default function TransactionsPage() {
                       <div className="text-left sm:text-right">
                         {item.amount !== undefined ? (
                           <p className="figure text-[15px]">
-                            {formatIDRX(item.amount)} <span className="text-xs text-muted-foreground">{item.kind === "VaultCreated" ? "IDRX quota" : "IDRX"}</span>
+                            {formatIDRX(item.amount)} <span className="text-xs text-muted-foreground">{item.kind === "IssueOpened" ? "IDRX quota" : "IDRX"}</span>
                           </p>
                         ) : (
                           <p className="text-[13px] text-muted-foreground">State change</p>
                         )}
                         {item.shares !== undefined && (
-                          <p className="figure text-xs text-muted-foreground">{formatIDRX(item.shares)} sSUKUK</p>
+                          <p className="figure text-xs text-muted-foreground">{formatIDRX(item.shares)} SUKUK1</p>
                         )}
                       </div>
                       <a
@@ -192,10 +199,10 @@ export default function TransactionsPage() {
 
         <p className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-forest" aria-hidden="true" /> Moves IDRX or shares
+            <span className="h-2 w-2 rounded-full bg-forest" aria-hidden="true" /> Moves IDRX
           </span>
           <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-amber" aria-hidden="true" /> Changes the vault state
+            <span className="h-2 w-2 rounded-full bg-amber" aria-hidden="true" /> Changes phase or compliance
           </span>
         </p>
       </div>

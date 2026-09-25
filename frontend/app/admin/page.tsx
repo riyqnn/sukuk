@@ -1,32 +1,30 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { useAccount } from "wagmi";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { CONTRACTS } from "@/contracts/addresses";
+import { PHASE } from "@/contracts/addresses";
 import {
-  useApproveIDRX,
-  useCloseVault,
-  useCreateVault,
   useHasRole,
-  useIDRXBalance,
-  usePauseVault,
-  useProtocolFill,
-  useSendPayout,
+  useIssue,
+  usePosition,
+  useProtocolActions,
+  useTreasuryBalance,
   useTxState,
-  useVaultParameters,
-  useVaultPaused,
-  useVaultState,
-  useVaultTotals,
 } from "@/lib/contracts";
+import { useNowSeconds } from "@/lib/useNow";
+import { useVaultActivity } from "@/lib/activity";
 import { getErrorMessage } from "@/lib/safe";
 import {
+  basisPointsToPercent,
+  compactAddress,
   formatDate,
   formatDuration,
   formatIDRX,
   formatTokenAmount,
   parseTokenAmount,
   toDisplayNumber,
+  untilLabel,
 } from "@/lib/formatters";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { KeyFigures } from "@/components/ui/KeyFigures";
@@ -34,129 +32,92 @@ import { ConnectGate } from "@/components/ui/ConnectGate";
 import { StepAction } from "@/components/ui/StepAction";
 import { Field } from "@/components/ui/Field";
 import { TxNotice } from "@/components/ui/TxNotice";
-import { StateBadge } from "@/components/ui/StateBadge";
+import { PhaseBadge } from "@/components/ui/PhaseBadge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { AnimatedNumber, PageTransition, Press, Reveal } from "@/components/ui/motion";
 
-const TICK = 15;
-
-/** Wall-clock seconds, refreshed every TICK seconds so the maturity check turns on by itself. */
-function useNowSeconds() {
-  return useSyncExternalStore(
-    (onChange) => {
-      const id = setInterval(onChange, TICK * 1000);
-      return () => clearInterval(id);
-    },
-    () => Math.floor(Date.now() / 1000 / TICK) * TICK,
-    () => 0,
-  );
-}
-
 export default function AdminPage() {
   const { address, isConnected } = useAccount();
-  const { data: vaultStateRaw, isLoading: stateLoading, refetch: refetchState } = useVaultState();
-  const params = useVaultParameters();
-  const totals = useVaultTotals();
-  const { data: idrxBal } = useIDRXBalance(address);
-  const { data: paused, refetch: refetchPaused } = useVaultPaused();
-  const { data: hasProtocolRole, isLoading: roleLoading } = useHasRole("PROTOCOL_ROLE", address);
-
-  const [maxQuotaInput, setMaxQuotaInput] = useState("");
-  const [durationDays, setDurationDays] = useState("180");
-  const [apyBps, setApyBps] = useState("500");
-  const [fillAmount, setFillAmount] = useState("");
-  const [payoutAmount, setPayoutAmount] = useState("");
-
-  const createTx = useTxState();
-  const fillTx = useTxState();
-  const payoutTx = useTxState();
-  const closeTx = useTxState();
-  const pauseTx = useTxState();
-
-  const { createVault } = useCreateVault();
-  const { protocolFill } = useProtocolFill();
-  const { sendPayout } = useSendPayout();
-  const { closeVault } = useCloseVault();
-  const { pause, unpause } = usePauseVault();
-  const { approve } = useApproveIDRX();
-
-  const s = Number(vaultStateRaw ?? 0);
-  const configured = !!params.vaultCreated.data;
-  const maxQuota = toDisplayNumber(params.maxQuota.data);
-  const totalAssets = toDisplayNumber(totals.totalAssets.data);
-  const remaining = Math.max(0, maxQuota - totalAssets);
-  const lockStart = Number(params.lockStartTime.data ?? 0n);
-  const dur = Number(params.duration.data ?? 0n);
-  const maturity = lockStart + dur;
+  const issue = useIssue();
+  const me = usePosition(address);
+  const treasury = useTreasuryBalance();
   const now = useNowSeconds();
-  const matured = lockStart > 0 && now >= maturity;
+  const actions = useProtocolActions();
+  const { data: hasProtocolRole, isLoading: roleLoading } = useHasRole("PROTOCOL_ROLE", address);
+  const activity = useVaultActivity();
 
-  function refetchAll() {
-    refetchState();
-    refetchPaused();
-    params.maxQuota.refetch();
-    params.duration.refetch();
-    params.apy.refetch();
-    params.lockStartTime.refetch();
-    params.vaultCreated.refetch();
-    totals.totalAssets.refetch();
-    totals.totalSupply.refetch();
-  }
+  const [allocAmount, setAllocAmount] = useState("");
+  const [returnAmount, setReturnAmount] = useState("");
+  const [couponAmount, setCouponAmount] = useState("");
 
-  /** Runs one admin call, optionally preceded by an IDRX approval, and reports its status. */
-  async function run(
-    tx: ReturnType<typeof useTxState>,
-    send: () => Promise<`0x${string}`>,
-    approveAmount?: bigint,
-  ) {
+  const allocTx = useTxState();
+  const returnTx = useTxState();
+  const couponTx = useTxState();
+  const stepTx = useTxState();
+
+  const { phase, terms } = issue;
+  const deployed = issue.deployedToTreasury;
+  const idle = issue.principal - deployed;
+  const couponDue = issue.nextCouponDate > 0n && now >= Number(issue.nextCouponDate);
+  const maturityReached = issue.maturityDate > 0n && now >= Number(issue.maturityDate);
+
+  /** Controllers with a redemption request that has not been settled yet. */
+  const pendingControllers = [
+    ...new Set(
+      (activity.data ?? [])
+        .filter((a) => a.kind === "RedeemRequest" && a.account)
+        .map((a) => a.account as `0x${string}`),
+    ),
+  ];
+
+  const busy = (tx: ReturnType<typeof useTxState>) =>
+    tx.status === "approving" || tx.status === "awaiting_signature";
+
+  async function run(tx: ReturnType<typeof useTxState>, fn: () => Promise<`0x${string}`>, approveFirst?: bigint) {
     try {
       tx.setError("");
       tx.setHash("");
-      if (approveAmount !== undefined) {
+      if (approveFirst !== undefined) {
         tx.setStatus("approving");
-        await approve(CONTRACTS.sukukVault, approveAmount);
+        await actions.approveIDRX(approveFirst);
       }
       tx.setStatus("awaiting_signature");
-      const hash = await send();
-      tx.setHash(hash);
+      tx.setHash(await fn());
       tx.setStatus("confirmed");
-      refetchAll();
+      issue.refetch();
     } catch (e: unknown) {
       tx.setStatus("failed");
       tx.setError(getErrorMessage(e));
     }
   }
 
-  const busy = (tx: ReturnType<typeof useTxState>) =>
-    tx.status === "approving" || tx.status === "awaiting_signature" || tx.status === "pending";
-
   if (!isConnected) {
     return (
       <PageTransition>
         <ConnectGate
           kicker="Protocol admin"
-          title="Run the round"
+          title="Run the issue"
           description="Controls for the wallet that holds PROTOCOL_ROLE. The role is checked on-chain before anything is shown as callable."
         />
       </PageTransition>
     );
   }
 
-  const createAmount = parseTokenAmount(maxQuotaInput);
-  const fillParsed = parseTokenAmount(fillAmount);
-  const payoutParsed = parseTokenAmount(payoutAmount);
+  const allocParsed = parseTokenAmount(allocAmount);
+  const returnParsed = parseTokenAmount(returnAmount);
+  const couponParsed = parseTokenAmount(couponAmount);
 
   return (
     <PageTransition>
       <div className="container pb-24">
         <PageHeader
           kicker="Protocol admin"
-          title="Run the round"
-          description="Every call below is gated by PROTOCOL_ROLE and by the vault's current state. The card that can act now is highlighted."
+          title="Run the issue"
+          description="Every call below is gated by PROTOCOL_ROLE and by the phase the issue is in. The card that can act now is highlighted."
           actions={
             <Press>
-              <button type="button" onClick={refetchAll} className="btn btn-ghost">
-                <RefreshCw className="h-4 w-4" aria-hidden="true" /> Refresh state
+              <button type="button" onClick={() => issue.refetch()} className="btn btn-ghost">
+                <RefreshCw className="h-4 w-4" aria-hidden="true" /> Refresh
               </button>
             </Press>
           }
@@ -166,8 +127,8 @@ export default function AdminPage() {
           <Reveal className="mb-8 flex items-start gap-3 rounded-[20px] bg-amber-soft px-6 py-5 text-[13px] text-amber">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <p>
-              <span className="font-semibold">This wallet does not hold PROTOCOL_ROLE.</span> The contract will
-              reject every call on this page from it.
+              <span className="font-semibold">This wallet does not hold PROTOCOL_ROLE.</span> The contract will reject
+              every call on this page from it.
             </p>
           </Reveal>
         )}
@@ -176,25 +137,25 @@ export default function AdminPage() {
           <KeyFigures
             figures={[
               {
-                label: "Vault state",
+                label: "Phase",
                 lead: true,
-                value: stateLoading ? <Skeleton className="h-6 w-28" /> : <StateBadge state={s} />,
-                note: configured ? "Decides which step is callable" : "No round configured yet",
+                value: issue.isLoading ? <Skeleton className="h-6 w-28" /> : <PhaseBadge phase={phase} />,
+                note: issue.paused ? "Paused: nothing can move" : "Decides which step is callable",
               },
               {
-                label: "Subscribed",
-                value: <AnimatedNumber value={totalAssets} suffix=" IDRX" />,
-                note: configured ? `${formatIDRX(remaining)} IDRX of quota left` : "Set by createVault()",
+                label: "At the project",
+                value: <AnimatedNumber value={toDisplayNumber(deployed)} suffix=" IDRX" />,
+                note: `${formatIDRX(idle)} IDRX still in the contract`,
               },
               {
-                label: "Circuit breaker",
-                value: paused ? "Paused" : "Running",
-                note: paused ? "Deposits and redemptions are halted" : "Deposits and redemptions allowed",
+                label: "Next profit period",
+                value: phase === PHASE.Active ? untilLabel(Number(issue.nextCouponDate), now) : "Not running",
+                note: `${issue.couponsPaid} paid · rate ${basisPointsToPercent(Number(terms.couponRate))}`,
               },
               {
                 label: "Your IDRX",
-                value: idrxBal !== undefined ? <AnimatedNumber value={toDisplayNumber(idrxBal)} suffix=" IDRX" /> : "Not read",
-                note: "Funds protocolFill() and sendPayout()",
+                value: <AnimatedNumber value={toDisplayNumber(me.idrxBalance)} suffix=" IDRX" />,
+                note: "Funds each profit period",
               },
             ]}
           />
@@ -202,114 +163,195 @@ export default function AdminPage() {
 
         <div className="mt-8 grid gap-8 lg:grid-cols-2">
           <StepAction
-            step="01"
-            title="Create the round"
-            call="createVault(maxQuota, duration, apy)"
-            description="Sets the quota, the lock period and the target yield. Runs once per deployment."
-            requires="no round"
-            current={s}
-            ready={!configured}
+            step="04"
+            title="Send principal to the project"
+            call="allocateToTreasury(amount)"
+            description="Moves subscribed IDRX to the treasury Safe, which funds the real-world project. It stays recorded as principal, so the certificate keeps its value."
+            requires="Active"
+            phase={phase}
+            ready={phase === PHASE.Active && idle > 0n}
+            checks={[
+              { label: "Issue is active", ok: phase === PHASE.Active },
+              { label: `Available to deploy ${formatIDRX(idle)} IDRX`, ok: idle > 0n },
+              { label: `Treasury Safe holds ${formatIDRX(treasury.data ?? 0n)} IDRX`, ok: (treasury.data ?? 0n) > 0n },
+            ]}
+            delay={0.05}
           >
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                run(createTx, () =>
-                  createVault(createAmount, BigInt(Math.round(Number(durationDays) * 86400)), BigInt(parseInt(apyBps || "0"))),
-                );
-              }}
-              className="space-y-4"
-            >
-              <Field id="max-quota" label="Quota" unit="IDRX" value={maxQuotaInput} onChange={setMaxQuotaInput} placeholder="100000" />
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field id="duration" label="Lock period" unit="days" value={durationDays} onChange={setDurationDays} placeholder="180" />
-                <Field id="apy" label="Target yield" unit="bps" value={apyBps} onChange={setApyBps} placeholder="500" hint="500 = 5%" step="1" />
-              </div>
-              <button type="submit" disabled={configured || createAmount <= 0n || busy(createTx)} className="btn btn-primary w-full">
-                {busy(createTx) ? "Waiting for wallet…" : "Create round"}
-              </button>
-              <TxNotice status={createTx.status} hash={createTx.hash} error={createTx.error} />
-            </form>
-          </StepAction>
-
-          <StepAction
-            step="03"
-            title="Top up the quota"
-            call="protocolFill(amount)"
-            description="Deposits protocol IDRX so the round reaches its quota. Two prompts: approve, then fill."
-            requires="Open"
-            current={s}
-            ready={s === 0 && configured && remaining > 0}
-          >
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                run(fillTx, () => protocolFill(fillParsed), fillParsed);
+                run(allocTx, () => actions.allocateToTreasury(allocParsed));
               }}
               className="space-y-4"
             >
               <Field
-                id="fill"
+                id="alloc"
                 label="Amount"
                 unit="IDRX"
-                value={fillAmount}
-                onChange={setFillAmount}
-                hint={`${formatIDRX(remaining)} left`}
-                onFill={remaining > 0 ? () => setFillAmount(formatTokenAmount(params.maxQuota.data! - (totals.totalAssets.data ?? 0n))) : undefined}
-                fillLabel="Fill"
+                value={allocAmount}
+                onChange={setAllocAmount}
+                hint={`${formatIDRX(idle)} available`}
+                onFill={idle > 0n ? () => setAllocAmount(formatTokenAmount(idle)) : undefined}
+                fillLabel="All"
               />
-              <button type="submit" disabled={s !== 0 || !configured || fillParsed <= 0n || busy(fillTx)} className="btn btn-primary w-full">
-                {busy(fillTx) ? "Waiting for wallet…" : "Top up quota"}
+              <button
+                type="submit"
+                disabled={phase !== PHASE.Active || allocParsed <= 0n || busy(allocTx)}
+                className="btn btn-primary w-full"
+              >
+                {busy(allocTx) ? "Waiting for wallet…" : "Send to the project"}
               </button>
-              <TxNotice status={fillTx.status} hash={fillTx.hash} error={fillTx.error} />
+              <TxNotice status={allocTx.status} hash={allocTx.hash} error={allocTx.error} />
             </form>
           </StepAction>
 
           <StepAction
             step="05"
-            title="Fund the payout"
-            call="sendPayout(amount)"
-            description="Pays the return into the vault after the lock period. The share price rises by exactly this amount."
-            requires="Locked"
-            current={s}
-            ready={s === 1 && matured}
-            checks={
-              lockStart > 0
-                ? [
-                    { label: `Locked on ${formatDate(lockStart)}`, ok: true },
-                    { label: `Lock period ${formatDuration(dur)} ends ${formatDate(maturity)}`, ok: matured },
-                  ]
-                : undefined
-            }
+            title="Fund a profit period"
+            call="fundCoupon(amount)"
+            description="Pays the period's profit in and splits it across every holder by share of the issue. Two prompts: approve, then fund."
+            requires="Active"
+            phase={phase}
+            ready={phase === PHASE.Active && couponDue}
+            checks={[
+              { label: "Issue is active", ok: phase === PHASE.Active },
+              {
+                label:
+                  issue.nextCouponDate > 0n
+                    ? `Period due ${untilLabel(Number(issue.nextCouponDate), now)}`
+                    : "Period schedule starts once active",
+                ok: couponDue,
+              },
+              { label: `Expected at the stated rate: ${formatIDRX(issue.expectedCoupon)} IDRX`, ok: true },
+            ]}
+            delay={0.1}
           >
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                run(payoutTx, () => sendPayout(payoutParsed), payoutParsed);
+                run(couponTx, () => actions.fundCoupon(couponParsed), couponParsed);
               }}
               className="space-y-4"
             >
-              <Field id="payout" label="Payout" unit="IDRX" value={payoutAmount} onChange={setPayoutAmount} placeholder="5000" />
-              <button type="submit" disabled={s !== 1 || payoutParsed <= 0n || busy(payoutTx)} className="btn btn-primary w-full">
-                {busy(payoutTx) ? "Waiting for wallet…" : "Fund payout"}
+              <Field
+                id="coupon"
+                label="Profit for this period"
+                unit="IDRX"
+                value={couponAmount}
+                onChange={setCouponAmount}
+                hint={`Expected ${formatIDRX(issue.expectedCoupon)}`}
+                onFill={
+                  issue.expectedCoupon > 0n ? () => setCouponAmount(formatTokenAmount(issue.expectedCoupon)) : undefined
+                }
+                fillLabel="Expected"
+              />
+              <button
+                type="submit"
+                disabled={phase !== PHASE.Active || couponParsed <= 0n || busy(couponTx)}
+                className="btn btn-primary w-full"
+              >
+                {busy(couponTx) ? "Waiting for wallet…" : "Fund the period"}
               </button>
-              <TxNotice status={payoutTx.status} hash={payoutTx.hash} error={payoutTx.error} />
+              <TxNotice status={couponTx.status} hash={couponTx.hash} error={couponTx.error} />
             </form>
           </StepAction>
 
           <StepAction
             step="07"
-            title="Close the round"
-            call="closeVault()"
-            description="Marks the round settled once redemption is open. Holders can still redeem afterwards."
-            requires="Approved for payout"
-            current={s}
-            ready={s === 3}
+            title="Return the principal"
+            call="returnFromTreasury(amount)"
+            description="Brings the principal back from the project at maturity. The treasury wallet must approve this contract first, then the whole amount has to be back before the issue can mature."
+            requires="principal outstanding"
+            phase={phase}
+            ready={deployed > 0n}
+            checks={[
+              { label: `Outstanding ${formatIDRX(deployed)} IDRX`, ok: deployed > 0n },
+              {
+                label: maturityReached ? "Maturity reached" : `Matures ${untilLabel(Number(issue.maturityDate), now)}`,
+                ok: maturityReached,
+              },
+            ]}
+            delay={0.05}
           >
-            <div className="space-y-4">
-              <button type="button" onClick={() => run(closeTx, closeVault)} disabled={s !== 3 || busy(closeTx)} className="btn btn-primary w-full">
-                {busy(closeTx) ? "Waiting for wallet…" : "Close round"}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                run(returnTx, () => actions.returnFromTreasury(returnParsed), returnParsed);
+              }}
+              className="space-y-4"
+            >
+              <Field
+                id="return"
+                label="Amount to return"
+                unit="IDRX"
+                value={returnAmount}
+                onChange={setReturnAmount}
+                hint={`${formatIDRX(deployed)} outstanding`}
+                onFill={deployed > 0n ? () => setReturnAmount(formatTokenAmount(deployed)) : undefined}
+                fillLabel="All"
+              />
+              <p className="rounded-xl bg-mist px-4 py-3 text-[13px] text-muted-foreground">
+                Sent from the connected wallet. To repay from the Safe, propose the transfer there instead.
+              </p>
+              <button
+                type="submit"
+                disabled={returnParsed <= 0n || busy(returnTx)}
+                className="btn btn-primary w-full"
+              >
+                {busy(returnTx) ? "Waiting for wallet…" : "Return principal"}
               </button>
-              <TxNotice status={closeTx.status} hash={closeTx.hash} error={closeTx.error} />
+              <TxNotice status={returnTx.status} hash={returnTx.hash} error={returnTx.error} />
+            </form>
+          </StepAction>
+
+          <StepAction
+            step="08"
+            title="Mature, settle and close"
+            call="markMatured() · fulfillRedeem() · closeIssue()"
+            description="Mark the tenor over, settle the redemption requests investors have opened, and close the issue once everyone has been served."
+            requires="Active or Redeeming"
+            phase={phase}
+            ready={
+              (phase === PHASE.Active && maturityReached && deployed === 0n) ||
+              (phase === PHASE.Redeeming && pendingControllers.length > 0) ||
+              phase === PHASE.Redeeming
+            }
+            checks={[
+              { label: "Maturity reached", ok: maturityReached },
+              { label: "Principal fully returned", ok: deployed === 0n },
+              {
+                label: `${pendingControllers.length} wallet${pendingControllers.length === 1 ? "" : "s"} requested redemption`,
+                ok: pendingControllers.length > 0,
+              },
+            ]}
+            delay={0.1}
+          >
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => run(stepTx, actions.markMatured)}
+                disabled={phase !== PHASE.Active || !maturityReached || deployed !== 0n || busy(stepTx)}
+                className="btn btn-soft w-full"
+              >
+                Mark matured
+              </button>
+              <button
+                type="button"
+                onClick={() => run(stepTx, () => actions.fulfillRedeem(pendingControllers))}
+                disabled={pendingControllers.length === 0 || busy(stepTx)}
+                className="btn btn-primary w-full"
+              >
+                Settle {pendingControllers.length} request{pendingControllers.length === 1 ? "" : "s"}
+              </button>
+              <button
+                type="button"
+                onClick={() => run(stepTx, actions.closeIssue)}
+                disabled={phase !== PHASE.Redeeming || busy(stepTx)}
+                className="btn btn-ghost w-full"
+              >
+                Close the issue
+              </button>
+              <TxNotice status={stepTx.status} hash={stepTx.hash} error={stepTx.error} />
             </div>
           </StepAction>
         </div>
@@ -317,22 +359,54 @@ export default function AdminPage() {
         <Reveal className="mt-8 flex flex-col gap-5 rounded-[24px] border border-line bg-amber-soft/60 p-7 md:flex-row md:items-center md:justify-between">
           <div>
             <p className="label">Circuit breaker · pause() / unpause()</p>
-            <p className="title mt-2 text-xl">{paused ? "The vault is paused" : "The vault is running"}</p>
+            <p className="title mt-2 text-xl">{issue.paused ? "The contract is paused" : "The contract is running"}</p>
             <p className="mt-1.5 max-w-[56ch] text-[13px] leading-relaxed text-muted-foreground">
-              Pausing halts deposits, redemptions, fills and payouts until it is lifted. Use it only for an incident.
+              Pausing halts subscriptions, transfers, profit claims and redemptions until it is lifted. Use it only for an
+              incident.
             </p>
           </div>
           <div className="w-full space-y-3 md:w-72">
             <button
               type="button"
-              onClick={() => run(pauseTx, () => (paused ? unpause() : pause()))}
-              disabled={busy(pauseTx)}
-              className={`btn w-full ${paused ? "btn-primary" : "border-amber bg-white text-amber hover:bg-amber hover:text-white"}`}
+              onClick={() => run(stepTx, () => (issue.paused ? actions.unpause() : actions.pause()))}
+              disabled={busy(stepTx)}
+              className={`btn w-full ${issue.paused ? "btn-primary" : "border-amber bg-white text-amber hover:bg-amber hover:text-white"}`}
             >
-              {busy(pauseTx) ? "Waiting for wallet…" : paused ? "Unpause vault" : "Pause vault"}
+              {issue.paused ? "Unpause" : "Pause everything"}
             </button>
-            <TxNotice status={pauseTx.status} hash={pauseTx.hash} error={pauseTx.error} />
           </div>
+        </Reveal>
+
+        <Reveal delay={0.05} className="panel mt-8 p-7">
+          <p className="label">Issue terms, as deployed</p>
+          <dl className="mt-4 grid gap-x-8 gap-y-4 text-[13px] sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              ["Quota", `${formatIDRX(terms.quota)} IDRX`],
+              ["Denomination", `${formatIDRX(terms.denomination)} IDRX`],
+              ["Tenor", formatDuration(Number(terms.tenor))],
+              ["Profit rate", `${basisPointsToPercent(Number(terms.couponRate))} a year`],
+              ["Profit period", formatDuration(Number(terms.couponInterval))],
+              ["Issued on", issue.issueDate > 0n ? formatDate(Number(issue.issueDate)) : "Not started"],
+              ["Matures on", issue.maturityDate > 0n ? formatDate(Number(issue.maturityDate)) : "Not started"],
+              ["Profit pool", `${formatIDRX(issue.couponPool)} IDRX`],
+              ["Awaiting claim", `${formatIDRX(issue.pendingRedemption)} IDRX`],
+            ].map(([k, v]) => (
+              <div key={k} className="flex items-baseline justify-between gap-4 border-b border-line pb-2">
+                <dt className="text-muted-foreground">{k}</dt>
+                <dd className="figure text-ink">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {pendingControllers.length > 0 && (
+            <p className="mt-5 text-[13px] text-muted-foreground">
+              Requests open from{" "}
+              {pendingControllers.map((c) => (
+                <span key={c} className="font-mono text-ink">
+                  {compactAddress(c)}{" "}
+                </span>
+              ))}
+            </p>
+          )}
         </Reveal>
       </div>
     </PageTransition>

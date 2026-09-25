@@ -3,18 +3,25 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePublicClient, useWatchContractEvent } from "wagmi";
 import { sepolia } from "wagmi/chains";
-import { CONTRACTS, VAULT_DEPLOY_BLOCK } from "@/contracts/addresses";
-import { SUKUK_VAULT_ABI } from "@/contracts/abis";
+import { CONTRACTS, DEPLOY_BLOCK } from "@/contracts/addresses";
+import { CERTIFICATE_ABI } from "@/contracts/abis";
 
 export type ActivityKind =
-  | "VaultCreated"
-  | "Deposited"
-  | "ProtocolFilled"
-  | "VaultLocked"
-  | "PayoutFunded"
-  | "PayoutApproved"
-  | "Redeemed"
-  | "VaultClosed"
+  | "IssueOpened"
+  | "Deposit"
+  | "SubscriptionClosed"
+  | "AllocatedToTreasury"
+  | "ReturnedFromTreasury"
+  | "CouponFunded"
+  | "CouponClaimed"
+  | "Matured"
+  | "RedemptionOpened"
+  | "RedeemRequest"
+  | "RedeemFulfilled"
+  | "Withdraw"
+  | "IssueClosed"
+  | "AddressFrozen"
+  | "RecoverySuccess"
   | "Paused"
   | "Unpaused";
 
@@ -23,36 +30,53 @@ export interface ActivityItem {
   kind: ActivityKind;
   txHash: `0x${string}`;
   blockNumber: bigint;
-  timestamp: number; // unix seconds
-  account?: `0x${string}`; // investor / actor the event is about
-  amount?: bigint; // IDRX (assets) where applicable
+  timestamp: number;
+  /** The investor or role the entry is about, when there is one. */
+  account?: `0x${string}`;
+  /** IDRX moved, where the event moves IDRX. */
+  amount?: bigint;
+  /** Certificates moved, where the event moves certificates. */
   shares?: bigint;
 }
 
 const KINDS: readonly string[] = [
-  "VaultCreated",
-  "Deposited",
-  "ProtocolFilled",
-  "VaultLocked",
-  "PayoutFunded",
-  "PayoutApproved",
-  "Redeemed",
-  "VaultClosed",
+  "IssueOpened",
+  "Deposit",
+  "SubscriptionClosed",
+  "AllocatedToTreasury",
+  "ReturnedFromTreasury",
+  "CouponFunded",
+  "CouponClaimed",
+  "Matured",
+  "RedemptionOpened",
+  "RedeemRequest",
+  "RedeemFulfilled",
+  "Withdraw",
+  "IssueClosed",
+  "AddressFrozen",
+  "RecoverySuccess",
   "Paused",
   "Unpaused",
 ];
 
 const LOG_RANGE = 50_000n; // stay under public-RPC getLogs limits
-const ACTIVITY_KEY = ["vault-activity", CONTRACTS.sukukVault] as const;
+const KEY = ["certificate-activity", CONTRACTS.certificate] as const;
 
 type Args = Record<string, unknown>;
 
 function toItem(
-  log: { eventName?: string; args?: unknown; transactionHash: `0x${string}`; blockNumber: bigint; logIndex: number },
+  log: {
+    eventName?: string;
+    args?: unknown;
+    transactionHash: `0x${string}`;
+    blockNumber: bigint;
+    logIndex: number;
+  },
   timestamps: Map<bigint, number>,
 ): ActivityItem | null {
   const kind = log.eventName;
   if (!kind || !KINDS.includes(kind)) return null;
+
   const a = (log.args ?? {}) as Args;
   const base = {
     id: `${log.transactionHash}-${log.logIndex}`,
@@ -61,51 +85,69 @@ function toItem(
     blockNumber: log.blockNumber,
     timestamp: timestamps.get(log.blockNumber) ?? 0,
   };
+
   switch (kind) {
-    case "Deposited":
-    case "ProtocolFilled":
-      return { ...base, account: a.receiver as `0x${string}`, amount: a.assets as bigint, shares: a.shares as bigint };
-    case "Redeemed":
+    case "Deposit":
       return { ...base, account: a.owner as `0x${string}`, amount: a.assets as bigint, shares: a.shares as bigint };
-    case "PayoutFunded":
-      return { ...base, amount: a.totalPayoutAmount as bigint };
-    case "VaultCreated":
-      return { ...base, amount: a.maxQuota as bigint };
-    case "Paused":
-    case "Unpaused":
-      return { ...base, account: a.account as `0x${string}` };
+    case "Withdraw":
+      return { ...base, account: a.owner as `0x${string}`, amount: a.assets as bigint, shares: a.shares as bigint };
+    case "RedeemRequest":
+      return { ...base, account: a.controller as `0x${string}`, shares: a.shares as bigint };
+    case "RedeemFulfilled":
+      return {
+        ...base,
+        account: a.controller as `0x${string}`,
+        amount: a.assets as bigint,
+        shares: a.shares as bigint,
+      };
+    case "CouponClaimed":
+      return { ...base, account: a.holder as `0x${string}`, amount: a.amount as bigint };
+    case "CouponFunded":
+      return { ...base, amount: a.amount as bigint };
+    case "AllocatedToTreasury":
+      return { ...base, account: a.treasury as `0x${string}`, amount: a.amount as bigint };
+    case "ReturnedFromTreasury":
+      return { ...base, account: a.from as `0x${string}`, amount: a.amount as bigint };
+    case "SubscriptionClosed":
+      return { ...base, amount: a.issueVolume as bigint };
+    case "IssueOpened":
+      return { ...base, amount: a.quota as bigint };
+    case "AddressFrozen":
+      return { ...base, account: a.holder as `0x${string}` };
+    case "RecoverySuccess":
+      return { ...base, account: a.lostWallet as `0x${string}` };
     default:
       return base;
   }
 }
 
-/** Every vault lifecycle/financial event, newest first, read straight from Sepolia logs. */
+/** Every certificate event, newest first, read straight from Sepolia logs. */
 export function useVaultActivity() {
   const client = usePublicClient({ chainId: sepolia.id });
   const queryClient = useQueryClient();
 
-  // New event on the vault -> refetch immediately (plus a slow poll as a fallback).
+  // A new event on the certificate refetches at once; the interval is the fallback.
   useWatchContractEvent({
-    address: CONTRACTS.sukukVault,
-    abi: SUKUK_VAULT_ABI,
+    address: CONTRACTS.certificate,
+    abi: CERTIFICATE_ABI,
     chainId: sepolia.id,
-    onLogs: () => queryClient.invalidateQueries({ queryKey: ACTIVITY_KEY }),
+    onLogs: () => queryClient.invalidateQueries({ queryKey: KEY }),
   });
 
   return useQuery({
-    queryKey: ACTIVITY_KEY,
+    queryKey: KEY,
     enabled: !!client,
     refetchInterval: 30_000,
     queryFn: async (): Promise<ActivityItem[]> => {
       if (!client) return [];
       const latest = await client.getBlockNumber();
       const logs = [];
-      for (let from = VAULT_DEPLOY_BLOCK; from <= latest; from += LOG_RANGE) {
+      for (let from = DEPLOY_BLOCK; from <= latest; from += LOG_RANGE) {
         const to = from + LOG_RANGE - 1n < latest ? from + LOG_RANGE - 1n : latest;
         logs.push(
           ...(await client.getContractEvents({
-            address: CONTRACTS.sukukVault,
-            abi: SUKUK_VAULT_ABI,
+            address: CONTRACTS.certificate,
+            abi: CERTIFICATE_ABI,
             fromBlock: from,
             toBlock: to,
           })),
@@ -121,10 +163,7 @@ export function useVaultActivity() {
         }),
       );
 
-      // protocolFill() emits both ProtocolFilled and Deposited; keep the more specific one.
-      const filledTx = new Set(logs.filter((l) => l.eventName === "ProtocolFilled").map((l) => l.transactionHash));
       return logs
-        .filter((l) => !(l.eventName === "Deposited" && filledTx.has(l.transactionHash)))
         .map((l) => toItem(l, timestamps))
         .filter((i): i is ActivityItem => i !== null)
         .sort((x, y) => (y.blockNumber === x.blockNumber ? 0 : y.blockNumber > x.blockNumber ? 1 : -1));

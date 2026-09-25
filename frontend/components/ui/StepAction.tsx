@@ -1,10 +1,10 @@
 import { Check, Minus } from "lucide-react";
-import { stateLabel } from "@/lib/formatters";
+import { phaseLabel } from "@/lib/formatters";
 import { Reveal } from "./motion";
 
 /**
- * One role-gated contract call. `ready` is whether the vault's current state allows it,
- * so the card that can act right now is the one that stands out.
+ * One role-gated contract call. `ready` is whether the issue's current phase allows it, so the card
+ * that can act right now is the one that stands out.
  */
 export function StepAction({
   step,
@@ -12,7 +12,8 @@ export function StepAction({
   call,
   description,
   requires,
-  current,
+  phase,
+  currentLabel,
   ready,
   checks,
   children,
@@ -23,7 +24,9 @@ export function StepAction({
   call: string;
   description: string;
   requires: string;
-  current: number;
+  phase: number;
+  /** Overrides the phase name, for the moment before it has loaded. */
+  currentLabel?: string;
   ready: boolean;
   checks?: { label: string; ok: boolean }[];
   children: React.ReactNode;
@@ -47,11 +50,16 @@ export function StepAction({
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{description}</p>
 
       {checks && (
-        <ul className={`mt-5 space-y-2 rounded-2xl p-4 text-[13px] ${ready ? "bg-mist" : "bg-white"}`} aria-label="On-chain preconditions">
+        <ul
+          className={`mt-5 space-y-2 rounded-2xl p-4 text-[13px] ${ready ? "bg-mist" : "bg-white"}`}
+          aria-label="On-chain preconditions"
+        >
           {checks.map((c) => (
             <li key={c.label} className="flex items-center gap-2.5">
               <span
-                className={`grid h-5 w-5 shrink-0 place-items-center rounded-full ${c.ok ? "bg-forest text-white" : "bg-white text-muted-foreground ring-1 ring-line"}`}
+                className={`grid h-5 w-5 shrink-0 place-items-center rounded-full ${
+                  c.ok ? "bg-forest text-white" : "bg-white text-muted-foreground ring-1 ring-line"
+                }`}
                 aria-hidden="true"
               >
                 {c.ok ? <Check className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
@@ -65,7 +73,7 @@ export function StepAction({
 
       <div className="mt-auto pt-6">
         <p className="mb-4 text-xs text-muted-foreground">
-          Vault is <span className="font-medium text-ink">{stateLabel(current)}</span>
+          Issue is <span className="font-medium text-ink">{currentLabel ?? phaseLabel(phase)}</span>
         </p>
         {children}
       </div>
